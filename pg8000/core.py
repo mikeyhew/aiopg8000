@@ -1,7 +1,7 @@
 import datetime
 from datetime import timedelta
 from warnings import warn
-import socket
+#import socket
 import threading
 from struct import pack
 from hashlib import md5
@@ -18,6 +18,8 @@ import os
 from distutils.version import LooseVersion
 from struct import Struct
 import time
+import asyncio
+
 
 # Copyright (c) 2007-2009, Mathieu Fenniak
 # All rights reserved.
@@ -874,6 +876,7 @@ class Cursor():
     # or mapping and will be bound to variables in the operation.
     # <p>
     # Stability: Part of the DBAPI 2.0 specification.
+    @asyncio.coroutine
     def execute(self, operation, args=None, stream=None):
         """Executes a database operation.  Parameters may be provided as a
         sequence, or as a mapping, depending upon the value of
@@ -906,18 +909,19 @@ class Cursor():
             self.stream = stream
 
             if not self._c.in_transaction and not self._c.autocommit:
-                self._c.execute(self, "begin transaction", None)
-            self._c.execute(self, operation, args)
+                yield from self._c.execute(self, "begin transaction", None)
+            yield from self._c.execute(self, operation, args)
         except AttributeError:
             if self._c is None:
                 raise InterfaceError("Cursor closed")
-            elif self._c._sock is None:
+            elif self._c._writer is None:
                 raise InterfaceError("connection is closed")
             else:
                 raise exc_info()[1]
         finally:
             self._c._lock.release()
 
+    @asyncio.coroutine
     def executemany(self, operation, param_sets):
         """Prepare a database operation, and then execute it against all
         parameter sequences or mappings provided.
@@ -934,11 +938,12 @@ class Cursor():
         """
         rowcounts = []
         for parameters in param_sets:
-            self.execute(operation, parameters)
+            yield from self.execute(operation, parameters)
             rowcounts.append(self._row_count)
 
         self._row_count = -1 if -1 in rowcounts else sum(rowcounts)
 
+    @asyncio.coroutine
     def fetchone(self):
         """Fetch the next row of a query result set.
 
@@ -950,7 +955,7 @@ class Cursor():
             are available.
         """
         try:
-            return next(self)
+            return (yield from self.get_next_row())
         except StopIteration:
             return None
         except TypeError:
@@ -958,6 +963,7 @@ class Cursor():
         except AttributeError:
             raise ProgrammingError("attempting to use unexecuted cursor")
 
+    @asyncio.coroutine
     def fetchmany(self, num=None):
         """Fetches the next set of rows of a query result.
 
@@ -975,12 +981,23 @@ class Cursor():
             making up a row.  If no more rows are available, an empty sequence
             will be returned.
         """
+
+        num = num if num is not None else self.arraysize
         try:
-            return tuple(
-                islice(self, self.arraysize if num is None else num))
+            result = []
+            while True:
+                row = yield from self.get_next_row()
+                if row is None:
+                    break
+                result.append(row)
+
+                if len(result) == num:
+                    break
+            return tuple(result)
         except TypeError:
             raise ProgrammingError("attempting to use unexecuted cursor")
 
+    @asyncio.coroutine
     def fetchall(self):
         """Fetches all remaining rows of a query result.
 
@@ -993,10 +1010,17 @@ class Cursor():
             making up a row.
         """
         try:
-            return tuple(self)
+            result = []
+            while True:
+                row = yield from self.get_next_row()
+                if row is None:
+                    break
+                result.append(row)
+            return tuple(result)
         except TypeError:
             raise ProgrammingError("attempting to use unexecuted cursor")
 
+    @asyncio.coroutine
     def close(self):
         """Closes the cursor.
 
@@ -1004,13 +1028,14 @@ class Cursor():
         <http://www.python.org/dev/peps/pep-0249/>`_.
         """
         self._c = None
-
+    '''
     def __iter__(self):
         """A cursor object is iterable to retrieve the rows from a query.
 
         This is a DBAPI 2.0 extension.
         """
         return self
+    '''
 
     def setinputsizes(self, sizes):
         """This method is part of the `DBAPI 2.0 specification
@@ -1026,6 +1051,38 @@ class Cursor():
         """
         pass
 
+    @asyncio.coroutine
+    def poll_rows(self):
+        if self.portal_suspended:
+            yield from self._c.send_EXECUTE(self)
+            yield from self._c._write(SYNC_MSG)
+            yield from self._c._flush()
+            yield from self._c.handle_messages(self)
+            if not self.portal_suspended:
+                yield from self._c.close_portal(self)
+
+    @asyncio.coroutine
+    def get_next_row(self):
+        try:
+            self._c._lock.acquire()
+
+            return self._cached_rows.popleft()
+        except IndexError:
+            yield from self.poll_rows()
+
+            try:
+                return self._cached_rows.popleft()
+            except IndexError:
+                if self.ps is None:
+                    raise ProgrammingError("A query hasn't been issued.")
+                elif len(self.ps['row_desc']) == 0:
+                    raise ProgrammingError("no result set")
+                else:
+                    return None
+        finally:
+            self._c._lock.release()
+
+    """
     def __next__(self):
         try:
             self._c._lock.acquire()
@@ -1050,8 +1107,10 @@ class Cursor():
         finally:
             self._c._lock.release()
 
+
 if PY2:
     Cursor.next = Cursor.__next__
+"""
 
 # Message codes
 NOTICE_RESPONSE = b("N")
@@ -1131,10 +1190,10 @@ class MulticastDelegate(object):
     def __isub__(self, delegate):
         self.delegates.remove(delegate)
         return self
-
+    @asyncio.coroutine
     def __call__(self, *args, **kwargs):
         for d in self.delegates:
-            d(*args, **kwargs)
+            yield from d(*args, **kwargs)
 
 
 class Connection(object):
@@ -1225,9 +1284,13 @@ class Connection(object):
             error.__name__, stacklevel=3)
         return error
 
-    def __init__(
-            self, user, host, unix_sock, port, database, password, ssl,
-            timeout):
+    def __init__(self):
+        pass
+
+    @asyncio.coroutine
+    def initialize(
+            self, stream_generator, user, database, password, loop):
+        self.loop = loop
         self._client_encoding = "utf8"
         self._commands_with_count = (
             b("INSERT"), b("DELETE"), b("UPDATE"), b("MOVE"),
@@ -1259,15 +1322,26 @@ class Connection(object):
         self.statement_number = 0
         self.portal_number = 0
 
+
+        self._stream_generator = stream_generator
+
+        (self._reader, self._writer) = yield from self._stream_generator()
+
+
+
+        """
         try:
             if unix_sock is None and host is not None:
-                self._usock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._aiosock = yield from asyncio.open_connection()
+                #self._usock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             elif unix_sock is not None:
                 if not hasattr(socket, "AF_UNIX"):
                     raise InterfaceError(
                         "attempt to connect to unix socket on unsupported "
                         "platform")
-                self._usock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+                self._aiosock = yield from asyncio.open_unix_connection()
+                #self._usock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             else:
                 raise ProgrammingError(
                     "one of host or unix_sock must be provided")
@@ -1302,13 +1376,21 @@ class Connection(object):
         except socket.error:
             self._usock.close()
             raise InterfaceError("communication error", exc_info()[1])
-        self._flush = self._sock.flush
-        self._read = self._sock.read
+        """
+        self._flush = self._writer.drain
+        self._read = self._reader.read
 
-        if PRE_26:
-            self._write = self._sock.writelines
-        else:
-            self._write = self._sock.write
+        @asyncio.coroutine
+        def close_aiostream():
+            return self._writer.close()
+        self._close_aiostream = close_aiostream
+
+        @asyncio.coroutine
+        def write(data):
+
+            return self._writer.write(data)
+
+        self._write = write
         self._backend_key_data = None
 
         ##
@@ -1603,21 +1685,23 @@ class Connection(object):
                 database = database.encode('utf8')
             val.extend(b("database\x00") + database + NULL_BYTE)
         val.append(0)
-        self._write(i_pack(len(val) + 4))
-        self._write(val)
-        self._flush()
+        yield from self._write(i_pack(len(val) + 4))
+        yield from self._write(val)
+        yield from self._flush()
 
-        self._cursor = self.cursor()
+        self._cursor = yield from self.cursor()
+
         try:
             self._lock.acquire()
             code = self.error = None
             while code not in (READY_FOR_QUERY, ERROR_RESPONSE):
-                code, data_len = ci_unpack(self._read(5))
-                self.message_types[code](self._read(data_len - 4), None)
+                code, data_len = ci_unpack((yield from self._read(5)))
+                data = yield from self._read(data_len - 4)
+                yield from self.message_types[code](data, None)
             if self.error is not None:
                 raise self.error
         except:
-            self._close()
+            yield from self._close()
             raise
         finally:
             self._lock.release()
@@ -1626,6 +1710,8 @@ class Connection(object):
         self.notifies = []
         self.notifies_lock = threading.Lock()
 
+
+    @asyncio.coroutine
     def handle_ERROR_RESPONSE(self, data, ps):
         responses = tuple(
             (s[0:1], s[1:].decode(self._client_encoding)) for s in
@@ -1636,23 +1722,29 @@ class Connection(object):
         else:
             self.error = ProgrammingError(*tuple(v for k, v in responses))
 
+    @asyncio.coroutine
     def handle_EMPTY_QUERY_RESPONSE(self, data, ps):
         self.error = ProgrammingError("query was empty")
 
+    @asyncio.coroutine
     def handle_CLOSE_COMPLETE(self, data, ps):
         pass
 
+    @asyncio.coroutine
     def handle_PARSE_COMPLETE(self, data, ps):
         # Byte1('1') - Identifier.
         # Int32(4) - Message length, including self.
         pass
 
+    @asyncio.coroutine
     def handle_BIND_COMPLETE(self, data, ps):
         pass
 
+    @asyncio.coroutine
     def handle_PORTAL_SUSPENDED(self, data, cursor):
         cursor.portal_suspended = True
 
+    @asyncio.coroutine
     def handle_PARAMETER_DESCRIPTION(self, data, ps):
         # Well, we don't really care -- we're going to send whatever we
         # want and let the database deal with it.  But thanks anyways!
@@ -1661,9 +1753,11 @@ class Connection(object):
         # type_oids = unpack_from("!" + "i" * count, data, 2)
         pass
 
+    @asyncio.coroutine
     def handle_COPY_DONE(self, data, ps):
         self._copy_done = True
 
+    @asyncio.coroutine
     def handle_COPY_OUT_RESPONSE(self, data, ps):
         # Int8(1) - 0 textual, 1 binary
         # Int16(2) - Number of columns
@@ -1675,9 +1769,11 @@ class Connection(object):
             raise InterfaceError(
                 "An output stream is required for the COPY OUT response.")
 
+    @asyncio.coroutine
     def handle_COPY_DATA(self, data, ps):
-        ps.stream.write(data)
+        yield from ps.stream.write(data)
 
+    @asyncio.coroutine
     def handle_COPY_IN_RESPONSE(self, data, ps):
         # Int16(2) - Number of columns
         # Int16(N) - Format codes for each column (0 text, 1 binary)
@@ -1690,29 +1786,30 @@ class Connection(object):
 
         if PY2:
             while True:
-                data = ps.stream.read(8192)
+                data = yield from ps.stream.read(8192)
                 if not data:
                     break
-                self._write(COPY_DATA + i_pack(len(data) + 4))
-                self._write(data)
-                self._flush()
+                yield from self._write(COPY_DATA + i_pack(len(data) + 4))
+                yield from self._write(data)
+                yield from self._flush()
         else:
             bffr = bytearray(8192)
             while True:
-                bytes_read = ps.stream.readinto(bffr)
+                bytes_read = yield from ps.stream.readinto(bffr)
                 if bytes_read == 0:
                     break
-                self._write(COPY_DATA + i_pack(bytes_read + 4))
-                self._write(bffr[:bytes_read])
-                self._flush()
+                yield from self._write(COPY_DATA + i_pack(bytes_read + 4))
+                yield from self._write(bffr[:bytes_read])
+                yield from self._flush()
 
         # Send CopyDone
         # Byte1('c') - Identifier.
         # Int32(4) - Message length, including self.
-        self._write(COPY_DONE_MSG)
-        self._write(SYNC_MSG)
-        self._flush()
+        yield from self._write(COPY_DONE_MSG)
+        yield from self._write(SYNC_MSG)
+        yield from self._flush()
 
+    @asyncio.coroutine
     def handle_NOTIFICATION_RESPONSE(self, data, ps):
         self.NotificationReceived(data)
         ##
@@ -1737,6 +1834,7 @@ class Connection(object):
         finally:
             self.notifies_lock.release()
 
+    @asyncio.coroutine
     def cursor(self):
         """Creates a :class:`Cursor` object bound to this
         connection.
@@ -1746,6 +1844,7 @@ class Connection(object):
         """
         return Cursor(self)
 
+    @asyncio.coroutine
     def commit(self):
         """Commits the current database transaction.
 
@@ -1754,10 +1853,11 @@ class Connection(object):
         """
         try:
             self._lock.acquire()
-            self.execute(self._cursor, "commit", None)
+            yield from self.execute(self._cursor, "commit", None)
         finally:
             self._lock.release()
 
+    @asyncio.coroutine
     def rollback(self):
         """Rolls back the current database transaction.
 
@@ -1766,27 +1866,31 @@ class Connection(object):
         """
         try:
             self._lock.acquire()
-            self.execute(self._cursor, "rollback", None)
+            yield from self.execute(self._cursor, "rollback", None)
         finally:
             self._lock.release()
 
+    @asyncio.coroutine
     def _close(self):
         try:
             # Byte1('X') - Identifies the message as a terminate message.
             # Int32(4) - Message length, including self.
-            self._write(TERMINATE_MSG)
-            self._flush()
-            self._sock.close()
+            yield from self._write(TERMINATE_MSG)
+            yield from self._flush()
+            yield from self._close_aiostream()
         except AttributeError:
             raise InterfaceError("connection is closed")
         except ValueError:
             raise InterfaceError("connection is closed")
-        except socket.error:
-            raise OperationalError(str(exc_info()[1]))
+        #except socket.error:
+        #    raise OperationalError(str(exc_info()[1]))
         finally:
-            self._usock.close()
-            self._sock = None
+            #self._usock.close()
+            yield from self._close_aiostream()
+            self._writer = None
+            self._reader = None
 
+    @asyncio.coroutine
     def close(self):
         """Closes the database connection.
 
@@ -1795,10 +1899,11 @@ class Connection(object):
         """
         try:
             self._lock.acquire()
-            self._close()
+            yield from self._close()
         finally:
             self._lock.release()
 
+    @asyncio.coroutine
     def handle_AUTHENTICATION_REQUEST(self, data, cursor):
         assert self._lock.locked()
         # Int32 -   An authentication code that represents different
@@ -1823,9 +1928,9 @@ class Connection(object):
                 raise InterfaceError(
                     "server requesting password authentication, but no "
                     "password was provided")
-            self._send_message(
-                PASSWORD, self.password.encode("ascii") + NULL_BYTE)
-            self._flush()
+            yield from self._send_message(
+                            PASSWORD, self.password.encode("ascii") + NULL_BYTE)
+            yield from self._flush()
         elif auth_code == 5:
             ##
             # A message representing the backend requesting an MD5 hashed
@@ -1845,8 +1950,8 @@ class Connection(object):
             # Byte1('p') - Identifies the message as a password message.
             # Int32 - Message length including self.
             # String - The password.  Password may be encrypted.
-            self._send_message(PASSWORD, pwd + NULL_BYTE)
-            self._flush()
+            yield from self._send_message(PASSWORD, pwd + NULL_BYTE)
+            yield from self._flush()
 
         elif auth_code in (2, 4, 6, 7, 8, 9):
             raise InterfaceError(
@@ -1857,10 +1962,12 @@ class Connection(object):
                 "Authentication method " + str(auth_code) +
                 " not recognized by pg8000.")
 
+    @asyncio.coroutine
     def handle_READY_FOR_QUERY(self, data, ps):
         # Byte1 -   Status indicator.
         self.in_transaction = data != IDLE
 
+    @asyncio.coroutine
     def handle_BACKEND_KEY_DATA(self, data, ps):
         self._backend_key_data = data
 
@@ -1885,6 +1992,7 @@ class Connection(object):
                         "not mapped to pg type")
         return params
 
+    @asyncio.coroutine
     def handle_ROW_DESCRIPTION(self, data, cursor):
         count = h_unpack(data)[0]
         idx = 2
@@ -1901,6 +2009,7 @@ class Connection(object):
             field['pg8000_fc'], field['func'] = \
                 self.pg_types[field['type_oid']]
 
+    @asyncio.coroutine
     def execute(self, cursor, operation, vals):
         if vals is None:
             vals = ()
@@ -1954,19 +2063,19 @@ class Connection(object):
             # Int32 - Message length, including self.
             # Byte1 - 'S' for prepared statement, 'P' for portal.
             # String - The name of the item to describe.
-            self._send_message(PARSE, val)
-            self._send_message(DESCRIBE, STATEMENT + statement_name_bin)
-            self._write(SYNC_MSG)
+            yield from self._send_message(PARSE, val)
+            yield from self._send_message(DESCRIBE, STATEMENT + statement_name_bin)
+            yield from self._write(SYNC_MSG)
 
             try:
-                self._flush()
+                yield from self._flush()
             except AttributeError:
-                if self._sock is None:
+                if self._writer is None:
                     raise InterfaceError("connection is closed")
                 else:
                     raise exc_info()[1]
 
-            self.handle_messages(cursor)
+            yield from self.handle_messages(cursor)
 
             # We've got row_desc that allows us to identify what we're
             # going to get back from this statement.
@@ -2028,16 +2137,16 @@ class Connection(object):
             if value is None:
                 val = NULL
             else:
-                val = send_func(value)
+                val = yield from send_func(value)
                 retval.extend(i_pack(len(val)))
             retval.extend(val)
         retval.extend(ps['bind_2'])
 
-        self._send_message(BIND, retval)
-        self.send_EXECUTE(cursor)
-        self._write(SYNC_MSG)
-        self._flush()
-        self.handle_messages(cursor)
+        yield from self._send_message(BIND, retval)
+        yield from self.send_EXECUTE(cursor)
+        yield from self._write(SYNC_MSG)
+        yield from self._flush()
+        yield from self.handle_messages(cursor)
         if cursor.portal_suspended:
             if self.autocommit:
                 raise InterfaceError(
@@ -2046,14 +2155,15 @@ class Connection(object):
                     "when the transaction is closed.")
 
         else:
-            self.close_portal(cursor)
+            yield from self.close_portal(cursor)
 
+    @asyncio.coroutine
     def _send_message(self, code, data):
         try:
-            self._write(code)
-            self._write(i_pack(len(data) + 4))
-            self._write(data)
-            self._write(FLUSH_MSG)
+            yield from self._write(code)
+            yield from self._write(i_pack(len(data) + 4))
+            yield from self._write(data)
+            yield from self._write(FLUSH_MSG)
         except ValueError:
             if str(exc_info()[1]) == "write to closed file":
                 raise InterfaceError("connection is closed")
@@ -2062,6 +2172,7 @@ class Connection(object):
         except AttributeError:
             raise InterfaceError("connection is closed")
 
+    @asyncio.coroutine
     def send_EXECUTE(self, cursor):
         # Byte1('E') - Identifies the message as an execute message.
         # Int32 -   Message length, including self.
@@ -2070,11 +2181,13 @@ class Connection(object):
         #           contains a query # that returns rows.
         #           0 = no limit.
         cursor.portal_suspended = False
-        self._send_message(EXECUTE, cursor.execute_msg)
+        yield from self._send_message(EXECUTE, cursor.execute_msg)
 
+    @asyncio.coroutine
     def handle_NO_DATA(self, msg, ps):
         pass
 
+    @asyncio.coroutine
     def handle_COMMAND_COMPLETE(self, data, cursor):
         values = data[:-1].split(BINARY_SPACE)
         command = values[0]
@@ -2089,6 +2202,7 @@ class Connection(object):
             for k in self._caches:
                 self._caches[k]['ps'].clear()
 
+    @asyncio.coroutine
     def handle_DATA_ROW(self, data, cursor):
         data_idx = 2
         row = []
@@ -2102,13 +2216,14 @@ class Connection(object):
                 data_idx += vlen
         cursor._cached_rows.append(row)
 
+    @asyncio.coroutine
     def handle_messages(self, cursor):
         code = self.error = None
 
         try:
             while code != READY_FOR_QUERY:
-                code, data_len = ci_unpack(self._read(5))
-                self.message_types[code](self._read(data_len - 4), cursor)
+                code, data_len = ci_unpack( (yield from self._read(5)) )
+                yield from self.message_types[code]( (yield from self._read(data_len - 4)), cursor)
         except:
             self._close()
             raise
@@ -2120,21 +2235,24 @@ class Connection(object):
     # Int32 - Message length, including self.
     # Byte1 - 'S' for prepared statement, 'P' for portal.
     # String - The name of the item to close.
+    @asyncio.coroutine
     def close_portal(self, cursor):
-        self._send_message(CLOSE, PORTAL + cursor.portal_name_bin)
-        self._write(SYNC_MSG)
-        self._flush()
-        self.handle_messages(cursor)
+        yield from self._send_message(CLOSE, PORTAL + cursor.portal_name_bin)
+        yield from self._write(SYNC_MSG)
+        yield from self._flush()
+        yield from self.handle_messages(cursor)
 
     # Byte1('N') - Identifier
     # Int32 - Message length
     # Any number of these, followed by a zero byte:
     #   Byte1 - code identifying the field type (see responseKeys)
     #   String - field value
+    @asyncio.coroutine
     def handle_NOTICE_RESPONSE(self, data, ps):
         resp = dict((s[0:1], s[1:]) for s in data.split(NULL_BYTE))
-        self.NoticeReceived(resp)
+        yield from self.NoticeReceived(resp)
 
+    @asyncio.coroutine
     def handle_PARAMETER_STATUS(self, data, ps):
         pos = data.find(NULL_BYTE)
         key, value = data[:pos], data[pos + 1:-1]
@@ -2285,6 +2403,7 @@ class Connection(object):
         (format_id, global_transaction_id, branch_qualifier)"""
         return (format_id, global_transaction_id, branch_qualifier)
 
+    @asyncio.coroutine
     def tpc_begin(self, xid):
         """Begins a TPC transaction with the given transaction ID xid.
 
@@ -2300,8 +2419,9 @@ class Connection(object):
         """
         self._xid = xid
         if self.autocommit:
-            self.execute(self._cursor, "begin transaction", None)
+            yield from self.execute(self._cursor, "begin transaction", None)
 
+    @asyncio.coroutine
     def tpc_prepare(self):
         """Performs the first phase of a transaction started with .tpc_begin().
         A ProgrammingError is be raised if this method is called outside of a
@@ -2314,8 +2434,9 @@ class Connection(object):
         <http://www.python.org/dev/peps/pep-0249/>`_.
         """
         q = "PREPARE TRANSACTION '%s';" % (self._xid[1],)
-        self.execute(self._cursor, q, None)
+        yield from self.execute(self._cursor, q, None)
 
+    @asyncio.coroutine
     def tpc_commit(self, xid=None):
         """When called with no arguments, .tpc_commit() commits a TPC
         transaction previously prepared with .tpc_prepare().
@@ -2345,16 +2466,17 @@ class Connection(object):
             previous_autocommit_mode = self.autocommit
             self.autocommit = True
             if xid in self.tpc_recover():
-                self.execute(
+                yield from self.execute(
                     self._cursor, "COMMIT PREPARED '%s';" % (xid[1], ),
                     None)
             else:
                 # a single-phase commit
-                self.commit()
+                yield from self.commit()
         finally:
             self.autocommit = previous_autocommit_mode
         self._xid = None
 
+    @asyncio.coroutine
     def tpc_rollback(self, xid=None):
         """When called with no arguments, .tpc_rollback() rolls back a TPC
         transaction. It may be called before or after .tpc_prepare().
@@ -2381,16 +2503,17 @@ class Connection(object):
             self.autocommit = True
             if xid in self.tpc_recover():
                 # a two-phase rollback
-                self.execute(
+                yield from self.execute(
                     self._cursor, "ROLLBACK PREPARED '%s';" % (xid[1],),
                     None)
             else:
                 # a single-phase rollback
-                self.rollback()
+                yield from self.rollback()
         finally:
             self.autocommit = previous_autocommit_mode
         self._xid = None
 
+    @asyncio.coroutine
     def tpc_recover(self):
         """Returns a list of pending transaction IDs suitable for use with
         .tpc_commit(xid) or .tpc_rollback(xid).
@@ -2401,8 +2524,8 @@ class Connection(object):
         try:
             previous_autocommit_mode = self.autocommit
             self.autocommit = True
-            curs = self.cursor()
-            curs.execute("select gid FROM pg_prepared_xacts")
+            curs = yield from self.cursor()
+            yield from curs.execute("select gid FROM pg_prepared_xacts")
             return [self.xid(0, row[0], '') for row in curs]
         finally:
             self.autocommit = previous_autocommit_mode

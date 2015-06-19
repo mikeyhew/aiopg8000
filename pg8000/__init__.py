@@ -5,6 +5,7 @@ from .core import (
     ArrayDimensionsNotConsistentError, ArrayContentNotSupportedError, utc,
     Connection, Cursor, Binary, Date, DateFromTicks, Time, TimeFromTicks,
     Timestamp, TimestampFromTicks, BINARY, Interval)
+import asyncio
 from ._version import get_versions
 __version__ = get_versions()['version']
 del get_versions
@@ -38,10 +39,8 @@ del get_versions
 
 __author__ = "Mathieu Fenniak"
 
-
-def connect(
-        user=None, host='localhost', unix_sock=None, port=5432, database=None,
-        password=None, ssl=False, timeout=None, **kwargs):
+@asyncio.coroutine
+def connect( stream_generator, user=None, database=None, password=None, loop=None, **kwargs):
     """Creates a connection to a PostgreSQL database.
 
     This function is part of the `DBAPI 2.0 specification
@@ -96,11 +95,17 @@ def connect(
         connection to the database will time out. The default is ``None`` which
         means no timeout.
 
+    :keyword loop:
+        Specify an asyncio loop; will defeault to ``asyncio.get_current_loop()``
+        if not specified.
+
     :rtype:
         A :class:`Connection` object.
     """
-    return Connection(
-        user, host, unix_sock, port, database, password, ssl, timeout)
+    conn = Connection()
+
+    yield from conn.initialize(stream_generator, user, database, password, loop)
+    return conn
 
 apilevel = "2.0"
 """The DBAPI level supported, currently "2.0".
