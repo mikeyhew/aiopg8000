@@ -2137,7 +2137,7 @@ class Connection(object):
             if value is None:
                 val = NULL
             else:
-                val = yield from send_func(value)
+                val = send_func(value)
                 retval.extend(i_pack(len(val)))
             retval.extend(val)
         retval.extend(ps['bind_2'])
