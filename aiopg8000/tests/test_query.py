@@ -6,6 +6,7 @@ from pg8000.six import u
 from sys import exc_info
 import datetime
 from distutils.version import LooseVersion
+from pg8000.tests.connection_settings import db_connect, async_test
 
 from warnings import filterwarnings
 
@@ -13,8 +14,9 @@ from warnings import filterwarnings
 # Tests relating to the basic operation of the database driver, driven by the
 # pg8000 custom interface.
 class Tests(unittest.TestCase):
+    @async_test
     def setUp(self):
-        self.db = pg8000.connect(**db_connect)
+        self.db = yield from pg8000.connect(**db_connect)
         filterwarnings("ignore", "DB-API extension cursor.next()")
         filterwarnings("ignore", "DB-API extension cursor.__iter__()")
         self.db.paramstyle = 'format'

@@ -1,8 +1,8 @@
 import unittest
 import pg8000
-from pg8000.tests.connection_settings import db_connect
+from pg8000.tests.connection_settings import db_connect, async_test
 from pg8000.six import PY2, PRE_26
-
+import asyncio
 
 # Tests related to connecting to a database.
 class Tests(unittest.TestCase):
@@ -19,22 +19,23 @@ class Tests(unittest.TestCase):
         data["database"] = "missing-db"
         self.assertRaises(pg8000.ProgrammingError, pg8000.connect, **data)
 
+    @async_test
     def testNotify(self):
 
         try:
-            db = pg8000.connect(**db_connect)
+            db = yield from pg8000.connect(**db_connect)
             self.assertEqual(db.notifies, [])
-            cursor = db.cursor()
-            cursor.execute("LISTEN test")
-            cursor.execute("NOTIFY test")
-            db.commit()
+            cursor = yield from  db.cursor()
+            yield from cursor.execute("LISTEN test")
+            yield from cursor.execute("NOTIFY test")
+            yield from db.commit()
 
-            cursor.execute("VALUES (1, 2), (3, 4), (5, 6)")
+            yield from cursor.execute("VALUES (1, 2), (3, 4), (5, 6)")
             self.assertEqual(len(db.notifies), 1)
             self.assertEqual(db.notifies[0][1], "test")
         finally:
-            cursor.close()
-            db.close()
+            yield from cursor.close()
+            yield from db.close()
 
     # This requires a line in pg_hba.conf that requires md5 for the database
     # pg8000_md5
@@ -117,19 +118,33 @@ class Tests(unittest.TestCase):
                 pg8000.ProgrammingError, '3D000', pg8000.connect, **data)
 
     def testBrokenPipe(self):
-        db1 = pg8000.connect(**db_connect)
-        db2 = pg8000.connect(**db_connect)
+        @async_test
+        def wrapper():
+            d1 = None
+            d2 = None
+            try:
+                db1 = yield from pg8000.connect(**db_connect)
+                db2 = yield from pg8000.connect(**db_connect)
 
-        cur1 = db1.cursor()
-        cur2 = db2.cursor()
+                cur1 = yield from db1.cursor()
+                cur2 = yield from db2.cursor()
 
-        cur1.execute("select pg_backend_pid()")
-        pid1 = cur1.fetchone()[0]
+                yield from cur1.execute("select pg_backend_pid()")
+                pid1 = (yield from cur1.fetchone())[0]
 
-        cur2.execute("select pg_terminate_backend(%s)", (pid1,))
-        self.assertRaises(pg8000.OperationalError, cur1.execute, "select 1")
-        cur2.close()
-        db2.close()
+
+                yield from cur2.execute("select pg_terminate_backend(%s)", (pid1,))
+
+                #should throw here
+                yield from cur1.execute("select 1")
+
+                yield from d1.close()
+            finally:
+                yield from cur2.close()
+                yield from db2.close()
+
+        self.assertRaises(pg8000.OperationalError, wrapper)
+
 
 if __name__ == "__main__":
     unittest.main()

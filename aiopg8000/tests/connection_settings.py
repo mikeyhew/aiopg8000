@@ -1,4 +1,6 @@
 import os
+import asyncio
+import copy
 
 '''
 db_stewart_connect = {
@@ -35,4 +37,19 @@ except KeyError:
         "contain the name of the environment variable that contains the "
         "kwargs for the connect() function.")
 
-db_connect = eval(os.environ[TEST_NAME])
+db_connect0 = eval(os.environ[TEST_NAME])
+
+
+#from http://stackoverflow.com/a/23036785/586784
+def async_test(f):
+    def wrapper(*args, **kwargs):
+        coro = asyncio.coroutine(f)
+        future = coro(*args, **kwargs)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(future)
+    return wrapper
+
+def stream_generator():
+    return (yield from asyncio.open_connection(host=db_connect0['host'], port=db_connect0['port'], ssl=db_connect0['ssl']))
+
+db_connect = dict(user=db_connect0['user'], password=db_connect0['password'], database=db_connect0['database'], stream_generator=stream_generator)

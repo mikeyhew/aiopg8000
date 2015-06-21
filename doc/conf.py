@@ -15,7 +15,7 @@ import sys, os
 # If your extensions are in another directory, add it here. If the directory
 # is relative to the documentation root, use os.path.abspath to make it
 # absolute, like shown here.
-sys.path.append(os.path.abspath('../pg8000'))
+sys.path.append(os.path.abspath('../aiopg8000'))
 
 # General configuration
 # ---------------------
@@ -34,7 +34,7 @@ source_suffix = '.rst'
 master_doc = 'index'
 
 # General substitutions.
-project = 'pg8000'
+project = 'aiopg8000'
 copyright = '2008, Mathieu Fenniak'
 
 # 'version' and 'release' are set in setup.py
@@ -143,7 +143,7 @@ html_last_updated_fmt = '%b %d, %Y'
 #html_file_suffix = ''
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'pg8000doc'
+htmlhelp_basename = 'aiopg8000doc'
 
 
 # Options for LaTeX output
@@ -158,7 +158,7 @@ htmlhelp_basename = 'pg8000doc'
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, document class [howto/manual]).
 latex_documents = [
-  ('index', 'pg8000.tex', 'pg8000 Documentation',
+  ('index', 'aiopg8000.tex', 'aiopg8000 Documentation',
    'Mathieu Fenniak', 'manual'),
 ]
 

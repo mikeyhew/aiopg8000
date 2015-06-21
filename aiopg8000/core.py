@@ -18,10 +18,13 @@ import os
 from distutils.version import LooseVersion
 from struct import Struct
 import time
+
 import asyncio
 import logging
 
-log = logging.getLogger('pg8000')
+
+
+log = logging.getLogger('aiopg8000')
 
 # Copyright (c) 2007-2009, Mathieu Fenniak
 # All rights reserved.
@@ -54,6 +57,11 @@ __author__ = "Mathieu Fenniak"
 
 
 def coroutine_wrapper(func):
+    """
+    This decorator is used on public facing coroutine methods to wrap them in case
+    an unexpected error is thrown during their use. If an expected error is thrown,
+    this will ensure the connection is closed.
+    """
     func0 = func
     func = asyncio.coroutine(func)
     @asyncio.coroutine
@@ -66,12 +74,12 @@ def coroutine_wrapper(func):
         except Error:
             raise
         except:
-            log.exception('Exception caught around %s' % (func0,))
+            #log.exception('Exception caught around %s' % (func0,))
 
             if not self.closed:
-                log.info('closing connection')
-                yield from self._close()
-                log.info('finished closing connection')
+                #log.info('closing connection')
+                yield from self.close()
+                #log.info('finished closing connection')
             raise
 
     return replacement
@@ -80,6 +88,50 @@ try:
     from json import loads
 except ImportError:
     pass  # Can only use JSON with Python 2.6 and above
+
+
+class RLockWrapper:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._lock_thread = None
+        self._level = 0
+
+    def __enter__(self):
+        self._lock.acquire()
+        if self._level == 0:
+            self._lock_thread = threading.current_thread()
+        self._level += 1
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._level -= 1
+        if self._level == 0:
+            self._lock_thread = None
+        self._lock.release()
+
+    def acquire(self, blocking=1):
+        result = self._lock.acquire(blocking)
+
+        if result:
+            if self._level == 0:
+                self._lock_thread = threading.current_thread()
+            self._level += 1
+
+        return result
+
+
+    def release(self):
+        self._level -= 1
+        if self._level == 0:
+            self._lock_thread = None
+        self._lock.release()
+
+    def locked(self, this_thread=False):
+        with self._lock:
+            if this_thread:
+                return (self._lock_thread is threading.current_thread())
+            else:
+                return (self._lock_thread is not None)
+
 
 
 ZERO = timedelta(0)
@@ -913,7 +965,7 @@ class Cursor():
     # Stability: Part of the DBAPI 2.0 specification.
     @asyncio.coroutine
     def execute(self, operation, args=None, stream=None):
-        """Executes a database operation.  Parameters may be provided as a
+        """Coroutine. Executes a database operation.  Parameters may be provided as a
         sequence, or as a mapping, depending upon the value of
         :data:`pg8000.paramstyle`.
 
@@ -960,7 +1012,7 @@ class Cursor():
 
     @asyncio.coroutine
     def executemany(self, operation, param_sets):
-        """Prepare a database operation, and then execute it against all
+        """Coroutine. Prepare a database operation, and then execute it against all
         parameter sequences or mappings provided.
 
         This method is part of the `DBAPI 2.0 specification
@@ -983,7 +1035,7 @@ class Cursor():
 
     @asyncio.coroutine
     def fetchone(self):
-        """Fetch the next row of a query result set.
+        """Coroutine. Fetch the next row of a query result set.
 
         This method is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1004,7 +1056,7 @@ class Cursor():
 
     @asyncio.coroutine
     def fetchmany(self, num=None):
-        """Fetches the next set of rows of a query result.
+        """Coroutine. Fetches the next set of rows of a query result.
 
         This method is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1039,7 +1091,7 @@ class Cursor():
 
     @asyncio.coroutine
     def fetchall(self):
-        """Fetches all remaining rows of a query result.
+        """Coroutine. Fetches all remaining rows of a query result.
 
         This method is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1063,7 +1115,7 @@ class Cursor():
 
     @asyncio.coroutine
     def close(self):
-        """Closes the cursor.
+        """Coroutine. Closes the cursor.
 
         This method is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1342,7 +1394,7 @@ class Connection(object):
         self._commands_with_count = (
             b("INSERT"), b("DELETE"), b("UPDATE"), b("MOVE"),
             b("FETCH"), b("COPY"), b("SELECT"))
-        self._lock = threading.Lock()
+        self._lock = RLockWrapper()
 
         if user is None:
             try:
@@ -1755,10 +1807,10 @@ class Connection(object):
 
         self.in_transaction = False
         self.notifies = []
-        self.notifies_lock = threading.Lock()
+        self.notifies_lock = RLockWrapper()
 
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_ERROR_RESPONSE(self, data, ps):
         responses = tuple(
             (s[0:1], s[1:].decode(self._client_encoding)) for s in
@@ -1769,29 +1821,29 @@ class Connection(object):
         else:
             self.error = ProgrammingError(*tuple(v for k, v in responses))
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_EMPTY_QUERY_RESPONSE(self, data, ps):
         self.error = ProgrammingError("query was empty")
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_CLOSE_COMPLETE(self, data, ps):
         pass
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_PARSE_COMPLETE(self, data, ps):
         # Byte1('1') - Identifier.
         # Int32(4) - Message length, including self.
         pass
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_BIND_COMPLETE(self, data, ps):
         pass
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_PORTAL_SUSPENDED(self, data, cursor):
         cursor.portal_suspended = True
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_PARAMETER_DESCRIPTION(self, data, ps):
         # Well, we don't really care -- we're going to send whatever we
         # want and let the database deal with it.  But thanks anyways!
@@ -1800,11 +1852,11 @@ class Connection(object):
         # type_oids = unpack_from("!" + "i" * count, data, 2)
         pass
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_COPY_DONE(self, data, ps):
         self._copy_done = True
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_COPY_OUT_RESPONSE(self, data, ps):
         # Int8(1) - 0 textual, 1 binary
         # Int16(2) - Number of columns
@@ -1816,17 +1868,17 @@ class Connection(object):
             raise InterfaceError(
                 "An output stream is required for the COPY OUT response.")
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_COPY_DATA(self, data, ps):
         yield from ps.stream.write(data)
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_COPY_IN_RESPONSE(self, data, ps):
         # Int16(2) - Number of columns
         # Int16(N) - Format codes for each column (0 text, 1 binary)
         is_binary, num_cols = bh_unpack(data)
         # column_formats = unpack_from('!' + 'h' * num_cols, data, 3)
-        assert self._lock.locked()
+        assert self._lock.locked(this_thread=True)
         if ps.stream is None:
             raise InterfaceError(
                 "An input stream is required for the COPY IN response.")
@@ -1856,7 +1908,7 @@ class Connection(object):
         yield from self._write(SYNC_MSG)
         yield from self._flush()
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_NOTIFICATION_RESPONSE(self, data, ps):
         self.NotificationReceived(data)
         ##
@@ -1883,7 +1935,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def cursor(self):
-        """Creates a :class:`Cursor` object bound to this
+        """Coroutine. Creates a :class:`Cursor` object bound to this
         connection.
 
         This function is part of the `DBAPI 2.0 specification
@@ -1895,7 +1947,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def commit(self):
-        """Commits the current database transaction.
+        """Coroutine. Commits the current database transaction.
 
         This function is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1909,7 +1961,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def rollback(self):
-        """Rolls back the current database transaction.
+        """Coroutine. Rolls back the current database transaction.
 
         This function is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1948,7 +2000,7 @@ class Connection(object):
     #don't use the wrapper, because the wrapper calls this function
     @asyncio.coroutine
     def close(self):
-        """Closes the database connection.
+        """Coroutine. Closes the database connection.
 
         This function is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
@@ -1959,9 +2011,9 @@ class Connection(object):
         finally:
             self._lock.release()
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_AUTHENTICATION_REQUEST(self, data, cursor):
-        assert self._lock.locked()
+        assert self._lock.locked(this_thread=True)
         # Int32 -   An authentication code that represents different
         #           authentication messages:
         #               0 = AuthenticationOk
@@ -2018,12 +2070,12 @@ class Connection(object):
                 "Authentication method " + str(auth_code) +
                 " not recognized by pg8000.")
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_READY_FOR_QUERY(self, data, ps):
         # Byte1 -   Status indicator.
         self.in_transaction = data != IDLE
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_BACKEND_KEY_DATA(self, data, ps):
         self._backend_key_data = data
 
@@ -2048,7 +2100,7 @@ class Connection(object):
                         "not mapped to pg type")
         return params
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_ROW_DESCRIPTION(self, data, cursor):
         count = h_unpack(data)[0]
         idx = 2
@@ -2214,7 +2266,7 @@ class Connection(object):
         else:
             yield from self.close_portal(cursor)
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def _send_message(self, code, data):
         try:
             yield from self._write(code)
@@ -2229,7 +2281,7 @@ class Connection(object):
         except AttributeError:
             raise InterfaceError("connection is closed")
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def send_EXECUTE(self, cursor):
         # Byte1('E') - Identifies the message as an execute message.
         # Int32 -   Message length, including self.
@@ -2240,11 +2292,11 @@ class Connection(object):
         cursor.portal_suspended = False
         yield from self._send_message(EXECUTE, cursor.execute_msg)
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_NO_DATA(self, msg, ps):
         pass
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_COMMAND_COMPLETE(self, data, cursor):
         values = data[:-1].split(BINARY_SPACE)
         command = values[0]
@@ -2259,7 +2311,7 @@ class Connection(object):
             for k in self._caches:
                 self._caches[k]['ps'].clear()
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_DATA_ROW(self, data, cursor):
         data_idx = 2
         row = []
@@ -2292,7 +2344,7 @@ class Connection(object):
     # Int32 - Message length, including self.
     # Byte1 - 'S' for prepared statement, 'P' for portal.
     # String - The name of the item to close.
-    @coroutine_wrapper
+    @asyncio.coroutine
     def close_portal(self, cursor):
         yield from self._check_sane()
         yield from self._send_message(CLOSE, PORTAL + cursor.portal_name_bin)
@@ -2305,12 +2357,12 @@ class Connection(object):
     # Any number of these, followed by a zero byte:
     #   Byte1 - code identifying the field type (see responseKeys)
     #   String - field value
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_NOTICE_RESPONSE(self, data, ps):
         resp = dict((s[0:1], s[1:]) for s in data.split(NULL_BYTE))
         yield from self.NoticeReceived(resp)
 
-    @coroutine_wrapper
+    @asyncio.coroutine
     def handle_PARAMETER_STATUS(self, data, ps):
         pos = data.find(NULL_BYTE)
         key, value = data[:pos], data[pos + 1:-1]
@@ -2463,7 +2515,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def tpc_begin(self, xid):
-        """Begins a TPC transaction with the given transaction ID xid.
+        """Coroutine. Begins a TPC transaction with the given transaction ID xid.
 
         This method should be called outside of a transaction (i.e. nothing may
         have executed since the last .commit() or .rollback()).
@@ -2482,7 +2534,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def tpc_prepare(self):
-        """Performs the first phase of a transaction started with .tpc_begin().
+        """Coroutine. Performs the first phase of a transaction started with .tpc_begin().
         A ProgrammingError is be raised if this method is called outside of a
         TPC transaction.
 
@@ -2498,7 +2550,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def tpc_commit(self, xid=None):
-        """When called with no arguments, .tpc_commit() commits a TPC
+        """Coroutine. When called with no arguments, .tpc_commit() commits a TPC
         transaction previously prepared with .tpc_prepare().
 
         If .tpc_commit() is called prior to .tpc_prepare(), a single phase
@@ -2539,7 +2591,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def tpc_rollback(self, xid=None):
-        """When called with no arguments, .tpc_rollback() rolls back a TPC
+        """Coroutine. When called with no arguments, .tpc_rollback() rolls back a TPC
         transaction. It may be called before or after .tpc_prepare().
 
         When called with a transaction ID xid, it rolls back the given
@@ -2577,7 +2629,7 @@ class Connection(object):
 
     @coroutine_wrapper
     def tpc_recover(self):
-        """Returns a list of pending transaction IDs suitable for use with
+        """Coroutine. Returns a list of pending transaction IDs suitable for use with
         .tpc_commit(xid) or .tpc_rollback(xid).
 
         This function is part of the `DBAPI 2.0 specification
@@ -2603,6 +2655,8 @@ class Connection(object):
     def _check_sane(self):
         if self.closed:
             raise InterfaceError("connection is closed")
+
+
 
 
 

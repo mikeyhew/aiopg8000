@@ -1,6 +1,24 @@
 Release Notes
 =============
 
+
+Version 1.10.3, 2015-06-21
+--------------------------
+- Added support for asyncio, calls marked as coroutines require `yield from`.
+
+- Changed most references of `pg8000` to `aiopg8000`.
+
+- The connect() call was changed and simplified to taking an asyncio stream
+  producing callback. Removed `host`, `port`, `unix_sock`, `ssl`, `timeout`
+  params from connect() function, replaced it with the `stream_generator`,
+  a callback that provides the stream for pg8000 to use.
+
+- Added a module specific logger named 'aiogp8000'.
+
+- Public facing methods are now safer, should they hit an unexpected exception
+  the connection will now automatically be closed.
+
+
 Version 1.10.2, 2015-03-17
 --------------------------
 - If there's a socket exception thrown when communicating with the database,

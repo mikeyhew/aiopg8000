@@ -1,5 +1,6 @@
-=pg8000
+=aiopg8000
 
+aiopg8000 is a fork of pg8000 to support asyncio.
 pg8000 is a pure-[[http://www.python.org/|Python]]
 [[http://www.postgresql.org/|PostgreSQL]] driver that complies with
 [[http://www.python.org/dev/peps/pep-0249/|DB-API 2.0]]. The driver
@@ -11,15 +12,17 @@ CircleCI [[https://circleci.com/gh/mfenniak/pg8000|Build Status]]: {{https://cir
 Links:
 
 * [[http://pythonhosted.org/pg8000/|User Docs]].
-* [[https://groups.google.com/forum/#!forum/pg8000|Forum]]
-* [[https://github.com/mfenniak/pg8000|Code, bugs, feature requests etc.]]
+* [[http://pythonhosted.org/aiopg8000/|aiopg8000 User Docs]].
+* [[https://groups.google.com/forum/#!forum/pg8000|pg8000 Forum]]
+* [[https://github.com/mfenniak/pg8000|Code, bugs, feature requests etc. for pg8000]]
+* [[https://github.com/realazthat/aiopg8000|Code, bugs, feature requests etc. for aiopg8000]]
 
 =Regression Tests
 
 To run the regression tests, install [[http://testrun.org/tox/latest/|tox]]:
 
 {{{
-pip install tox
+pip3 install tox
 }}}
 
 then install all the supported Python versions (using the
@@ -53,7 +56,7 @@ export PG8000_TEST_9_3="{'user': 'postgres', 'password': 'pw', 'port': 5435}"
 export PG8000_TEST_9_4="{'user': 'postgres', 'password': 'pw', 'port': 5436}"
 }}}
 
-then run {{{tox}}} from the {{{pg8000}}} directory:
+then run {{{tox}}} from the {{{aiopg8000}}} directory:
 
 {{{
 tox
@@ -64,10 +67,10 @@ Jython 2.5, run the {{{run_25}}} script.
 
 ==Performance Tests
 
-To run the performance tests from the {{{pg8000}}} directory:
+To run the performance tests from the {{{aiopg8000}}} directory:
 
 {{{
-python -m pg8000.tests.performance
+python3 -m aiopg8000.tests.performance
 }}}
 
 ==Stress Test
@@ -75,7 +78,7 @@ python -m pg8000.tests.performance
 There's a stress test that is run by doing:
 
 {{{
-python ./multi
+python3 ./multi
 }}}
 
 The idea is to set {{{shared_buffers}}} in postgresql.conf to 128kB, and then
@@ -87,25 +90,25 @@ The docs are written using [[http://sphinx-doc.org/|Sphinx]]. To build them,
 install sphinx:
 
 {{{
-pip install sphinx
+pip3 install sphinx
 }}}
 
 Then type:
 
 {{{
-python setup.py build_sphinx
+python3 setup.py build_sphinx
 }}}
 
 and the docs will appear in {{{build/sphinx/html}}}.
 
-=Doing A Release Of pg8000
+=Doing A Release Of aiopg8000
 
 Run {{{tox}}} and {{{run_25}}} to make sure all tests pass, then update
 {{{doc/release_notes.rst}}} then do:
 
 {{{
 git tag -a x.y.z -m "Version x.y.z"
-python setup.py register sdist bdist_wheel upload build_sphinx upload_docs
+python3 setup.py register sdist bdist_wheel upload build_sphinx upload_docs
 }}}
 
 Then post a message to the forum.

@@ -1,6 +1,8 @@
-##########
-  pg8000
-##########
+############
+  aiopg8000
+############
+
+aiopg8000 is a fork of pg8000 to asyncio.
 
 pg8000 is a `DB-API 2.0 <http://www.python.org/dev/peps/pep-0249/>`_ compatible
 pure-Python interface to the `PostgreSQL <http://www.postgresql.org/>`_

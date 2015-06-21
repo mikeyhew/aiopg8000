@@ -4,8 +4,8 @@ Type Mapping
 The following table shows the mapping between Python types and PostgreSQL
 types, and vice versa.
 
-If pg8000 doesn't recognize a type that it receives from PostgreSQL, it will
-return it as a ``str`` type. This is how pg8000 handles PostgreSQL ``enum`` and
+If aiopg8000 doesn't recognize a type that it receives from PostgreSQL, it will
+return it as a ``str`` type. This is how aiopg8000 handles PostgreSQL ``enum`` and
 XML types.
 
 +--------------------------------+-----------------+---------------------------+
@@ -25,7 +25,7 @@ XML types.
 +--------------------------------+-----------------+---------------------------+
 | :class:`decimal.Decimal`       | numeric         |                           |
 +--------------------------------+-----------------+---------------------------+
-| :class:`pg8000.Bytea`          | bytea           | Python 2 only.            |
+| :class:`aiopg8000.Bytea`          | bytea           | Python 2 only.            |
 +--------------------------------+-----------------+---------------------------+
 | :class:`bytes`                 | bytea           | Python 3 only.            |
 +--------------------------------+-----------------+---------------------------+
@@ -50,9 +50,9 @@ XML types.
 |                                | time zone       |                           |
 +--------------------------------+-----------------+---------------------------+
 | :class:`datetime.timedelta`    | interval        | datetime.timedelta is     |
-| :class:`pg8000.Interval`       |                 | used unless the interval  |
+| :class:`aiopg8000.Interval`       |                 | used unless the interval  |
 |                                |                 | has months, in which case |
-|                                |                 | pg8000.Interval is used   |
+|                                |                 | aiopg8000.Interval is used   |
 +--------------------------------+-----------------+---------------------------+
 | None                           | NULL            |                           |
 +--------------------------------+-----------------+---------------------------+

@@ -37,8 +37,8 @@ def get_config():
     cfg.VCS = "git"
     cfg.style = "pep440"
     cfg.tag_prefix = ""
-    cfg.parentdir_prefix = "pg8000-"
-    cfg.versionfile_source = "pg8000/_version.py"
+    cfg.parentdir_prefix = "aiopg8000-"
+    cfg.versionfile_source = "aiopg8000/_version.py"
     cfg.verbose = False
     return cfg
 

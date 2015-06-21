@@ -1,6 +1,6 @@
-.. module:: pg8000
+.. module:: aiopg8000
 
-API Reference for pg8000.
+API Reference for aiopg8000.
 
 Properties
 ----------
@@ -53,7 +53,7 @@ Functions
 
 Generic Exceptions
 ------------------
-pg8000 uses the standard DBAPI 2.0 exception tree as "generic" exceptions.
+aiopg8000 uses the standard DBAPI 2.0 exception tree as "generic" exceptions.
 Generally, more specific exception types are raised; these specific exception
 types are derived from the generic exceptions.
 

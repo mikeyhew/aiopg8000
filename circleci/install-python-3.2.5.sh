@@ -1,7 +1,7 @@
 set -x
 set -e
 
-BUILDROOT=$HOME/pg8000
+BUILDROOT=$HOME/aiopg8000
 
 if [[ ! -e py-3.2.5/bin/python3.2 ]]; then
     wget https://www.python.org/ftp/python/3.2.5/Python-3.2.5.tar.bz2

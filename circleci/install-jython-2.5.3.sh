@@ -1,7 +1,7 @@
 set -x
 set -e
 
-BUILDROOT=$HOME/pg8000
+BUILDROOT=$HOME/aiopg8000
 
 if [[ ! -e jython-2.5.3/bin/jython ]]; then
     wget -O jython-installer-2.5.3.jar "http://search.maven.org/remotecontent?filepath=org/python/jython-installer/2.5.3/jython-installer-2.5.3.jar"

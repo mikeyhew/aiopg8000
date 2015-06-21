@@ -4,7 +4,7 @@
 
 for i in {1..100}
 do
-	python -m pg8000.tests.stress &
+	python3 -m aiopg8000.tests.stress &
 done
 wait
 echo "All processes done!"

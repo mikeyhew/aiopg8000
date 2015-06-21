@@ -47,6 +47,10 @@ def connect( stream_generator, user=None, database=None, password=None, loop=Non
     <http://www.python.org/dev/peps/pep-0249/>`_; however, the arguments of the
     function are not defined by the specification.
 
+    :param stream_generator:
+        A function that when called will produce a tuple of
+        ``(asyncio.StreamReader, asyncio.StreamWriter)`` that is connected to
+        the database.
     :param user:
         The username to connect to the PostgreSQL server with. If this is not
         provided, pg8000 looks first for the PGUSER then the USER environment
@@ -55,21 +59,6 @@ def connect( stream_generator, user=None, database=None, password=None, loop=Non
         If your server character encoding is not ``ascii`` or ``utf8``, then
         you need to provide ``user`` as bytes, eg.
         ``"my_name".encode('EUC-JP')``.
-
-    :keyword host:
-        The hostname of the PostgreSQL server to connect with.  Providing this
-        parameter is necessary for TCP/IP connections.  One of either ``host``
-        or ``unix_sock`` must be provided. The default is ``localhost``.
-
-    :keyword unix_sock:
-        The path to the UNIX socket to access the database through, for
-        example, ``'/tmp/.s.PGSQL.5432'``.  One of either ``host`` or
-        ``unix_sock`` must be provided.
-
-    :keyword port:
-        The TCP/IP port of the PostgreSQL server instance.  This parameter
-        defaults to ``5432``, the registered common port of PostgreSQL TCP/IP
-        servers.
 
     :keyword database:
         The name of the database instance to connect with.  This parameter is
@@ -86,18 +75,11 @@ def connect( stream_generator, user=None, database=None, password=None, loop=Non
         authentication, the connection will fail to open.  If this parameter
         is provided but not requested by the server, no error will occur.
 
-    :keyword ssl:
-        Use SSL encryption for TCP/IP sockets if ``True``.  Defaults to
-        ``False``.
-
-    :keyword timeout:
-        Only used with Python 3, this is the time in seconds before the
-        connection to the database will time out. The default is ``None`` which
-        means no timeout.
-
     :keyword loop:
         Specify an asyncio loop; will defeault to ``asyncio.get_current_loop()``
         if not specified.
+
+
 
     :rtype:
         A :class:`Connection` object.
@@ -172,7 +154,7 @@ __all__ = [
     Connection, Cursor, Binary, Date, DateFromTicks, Time, TimeFromTicks,
     Timestamp, TimestampFromTicks, BINARY, Interval]
 
-"""Version string for pg8000.
+"""Version string for aiopg8000.
 
     .. versionadded:: 1.9.11
 """
