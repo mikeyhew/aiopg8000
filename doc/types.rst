@@ -25,7 +25,7 @@ XML types.
 +--------------------------------+-----------------+---------------------------+
 | :class:`decimal.Decimal`       | numeric         |                           |
 +--------------------------------+-----------------+---------------------------+
-| :class:`aiopg8000.Bytea`          | bytea           | Python 2 only.            |
+| :class:`aiopg8000.Bytea`       | bytea           | Python 2 only.            |
 +--------------------------------+-----------------+---------------------------+
 | :class:`bytes`                 | bytea           | Python 3 only.            |
 +--------------------------------+-----------------+---------------------------+
@@ -50,9 +50,9 @@ XML types.
 |                                | time zone       |                           |
 +--------------------------------+-----------------+---------------------------+
 | :class:`datetime.timedelta`    | interval        | datetime.timedelta is     |
-| :class:`aiopg8000.Interval`       |                 | used unless the interval  |
+| :class:`aiopg8000.Interval`    |                 | used unless the interval  |
 |                                |                 | has months, in which case |
-|                                |                 | aiopg8000.Interval is used   |
+|                                |                 | aiopg8000.Interval is used|
 +--------------------------------+-----------------+---------------------------+
 | None                           | NULL            |                           |
 +--------------------------------+-----------------+---------------------------+
