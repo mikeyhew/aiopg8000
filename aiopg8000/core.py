@@ -1389,6 +1389,10 @@ class Connection(object):
     @coroutine_wrapper
     def initialize(
             self, stream_generator, user, database, password, loop):
+        self.loop = None
+        self._writer = None
+        self._reader = None
+        
         self.loop = loop
         self._client_encoding = "utf8"
         self._commands_with_count = (

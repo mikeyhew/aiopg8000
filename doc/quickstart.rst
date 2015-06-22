@@ -45,9 +45,18 @@ query the table:
 
     import aiopg8000, asyncio
 
+
     @asyncio.coroutine
     def example():
-        conn = yield from aiopg8000.connect(user="postgres", password="C.P.Snow")
+        @asyncio.coroutine
+        def stream_generator():
+            return (yield from asyncio.open_connection(host='localhost', port=5432, ssl=False))
+
+
+        conn = yield from aiopg8000.connect(  stream_generator=stream_generator
+                                            , user="postgres"
+                                            , password="C.P.Snow"
+                                            , database="my_example_db")
         cursor = yield from conn.cursor()
         yield from cursor.execute("CREATE TEMPORARY TABLE book (id SERIAL, title TEXT)")
         yield from cursor.execute(
