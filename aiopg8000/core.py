@@ -20,6 +20,7 @@ from struct import Struct
 import time
 
 import asyncio
+import functools
 import logging
 
 
@@ -56,17 +57,17 @@ log = logging.getLogger('aiopg8000')
 __author__ = "Mathieu Fenniak"
 
 
-def coroutine_wrapper(func):
+def public_coroutine_decorator(func):
     """
     This decorator is used on public facing coroutine methods to wrap them in case
     an unexpected error is thrown during their use. If an expected error is thrown,
     this will ensure the connection is closed.
     """
-    func0 = func
-    func = asyncio.coroutine(func)
+    assert asyncio.iscoroutinefunction(func)
+    
     @asyncio.coroutine
+    @functools.wraps(func)
     def replacement(*args, **kwargs):
-        #log.debug('%s is called' % (func0,))
         self = args[0]
 
         try:
@@ -1115,7 +1116,7 @@ class Cursor():
             raise ProgrammingError("attempting to use unexecuted cursor")
 
     @asyncio.coroutine
-    def close(self):
+    def yield_close(self):
         """Coroutine. Closes the cursor.
 
         This method is part of the `DBAPI 2.0 specification
@@ -1124,6 +1125,18 @@ class Cursor():
         self._c = None
         #TODO: reset all the cached return rows
 
+    def close(self):
+        """Closes the cursor.
+
+        This method is part of the `DBAPI 2.0 specification
+        <http://www.python.org/dev/peps/pep-0249/>`_.
+        """
+        self._c = None
+        #TODO: reset all the cached return rows
+        
+    
+    
+    
     '''
     def __iter__(self):
         """A cursor object is iterable to retrieve the rows from a query.
@@ -1380,10 +1393,12 @@ class Connection(object):
     def __init__(self):
         pass
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def initialize(
             self, stream_generator, user, database, password, loop):
         self.loop = None
+        self.close_future = None
         self._writer = None
         self._reader = None
         
@@ -1478,9 +1493,15 @@ class Connection(object):
         self._read = self._reader.read
 
         @asyncio.coroutine
-        def close_aiostream():
-            return self._writer.close()
-        self._close_aiostream = close_aiostream
+        def _yield_close_aiostream():
+            self._writer.close()
+
+        def _future_close_aiostream():
+            self._writer.close()
+            
+            
+        self._yield_close_aiostream = _yield_close_aiostream
+        self._future_close_aiostream = _future_close_aiostream
 
         @asyncio.coroutine
         def write(data):
@@ -1798,7 +1819,7 @@ class Connection(object):
             if self.error is not None:
                 raise self.error
         except:
-            yield from self._close()
+            yield from self._yield_close()
             raise
         finally:
             self._lock.release()
@@ -1931,7 +1952,8 @@ class Connection(object):
         finally:
             self.notifies_lock.release()
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def cursor(self):
         """Coroutine. Creates a :class:`Cursor` object bound to this
         connection.
@@ -1943,7 +1965,8 @@ class Connection(object):
         yield from self._check_sane()
         return Cursor(self)
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def commit(self):
         """Coroutine. Commits the current database transaction.
 
@@ -1957,7 +1980,8 @@ class Connection(object):
         finally:
             self._lock.release()
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def rollback(self):
         """Coroutine. Rolls back the current database transaction.
 
@@ -1973,7 +1997,7 @@ class Connection(object):
 
     #don't use the wrapper, because the wrapper calls this function
     @asyncio.coroutine
-    def _close(self):
+    def _yield_close(self):
         if self._writer is None:
             return
         try:
@@ -1982,7 +2006,7 @@ class Connection(object):
             # Int32(4) - Message length, including self.
             yield from self._write(TERMINATE_MSG)
             yield from self._flush()
-            yield from self._close_aiostream()
+            yield from self._yield_close_aiostream()
         except AttributeError:
             raise InterfaceError("connection is closed")
         except ValueError:
@@ -1992,23 +2016,53 @@ class Connection(object):
         finally:
             #self._usock.close()
             if self._writer is not None:
-                yield from self._close_aiostream()
+                yield from self._yield_close_aiostream()
             self._writer = None
             self._reader = None
 
     #don't use the wrapper, because the wrapper calls this function
     @asyncio.coroutine
-    def close(self):
-        """Coroutine. Closes the database connection.
+    def yield_close(self):
+        """Coroutine. Closes the database connection, the connection
+        will be closed upon return.
 
         This function is part of the `DBAPI 2.0 specification
         <http://www.python.org/dev/peps/pep-0249/>`_.
         """
         try:
             self._lock.acquire()
-            yield from self._close()
+            yield from self._yield_close()
         finally:
             self._lock.release()
+
+    
+    def close(self):
+        """
+        Schedules the database connection to close. The connection
+        will not be closed upon return; rather it will close sometime
+        in the future after the next yield to the asyncio event loop.
+        
+        It also returns the asyncio.Task that it schedules on the loop,
+        so you can `yield from` the task after this function returns.
+        The reason this is not a coroutine itself is so that this can
+        be called from within a context manager, which cannot be
+        decorated as a coroutine.
+        
+        Might be more aptly called `future_close()`, but kept this
+        way to allow things that expect a `.close()` function to work.
+        """
+        
+        try:
+            self._lock.acquire()
+            if self.close_future is None:
+                self.close_future = asyncio.async(self.yield_close())
+            
+            assert self.close_future is not None
+            return self.close_future
+        finally:
+            self._lock.release()
+            
+    
 
     @asyncio.coroutine
     def handle_AUTHENTICATION_REQUEST(self, data, cursor):
@@ -2116,7 +2170,8 @@ class Connection(object):
             field['pg8000_fc'], field['func'] = \
                 self.pg_types[field['type_oid']]
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def execute(self, cursor, operation, vals):
         yield from self._check_sane()
         if vals is None:
@@ -2333,7 +2388,7 @@ class Connection(object):
                 code, data_len = ci_unpack( (yield from self._read(5)) )
                 yield from self.message_types[code]( (yield from self._read(data_len - 4)), cursor)
         except:
-            yield from self._close()
+            yield from self._yield_close()
             raise
 
         if self.error is not None:
@@ -2407,7 +2462,8 @@ class Connection(object):
                     b("INSERT"), b("DELETE"), b("UPDATE"), b("MOVE"),
                     b("FETCH"), b("COPY"))
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def poll_rows(self, cur):
 
         if cur.portal_suspended:
@@ -2523,7 +2579,8 @@ class Connection(object):
         (format_id, global_transaction_id, branch_qualifier)"""
         return (format_id, global_transaction_id, branch_qualifier)
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def tpc_begin(self, xid):
         """Coroutine. Begins a TPC transaction with the given transaction ID xid.
 
@@ -2542,7 +2599,8 @@ class Connection(object):
         if self.autocommit:
             yield from self.execute(self._cursor, "begin transaction", None)
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def tpc_prepare(self):
         """Coroutine. Performs the first phase of a transaction started with .tpc_begin().
         A ProgrammingError is be raised if this method is called outside of a
@@ -2558,7 +2616,8 @@ class Connection(object):
         q = "PREPARE TRANSACTION '%s';" % (self._xid[1],)
         yield from self.execute(self._cursor, q, None)
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def tpc_commit(self, xid=None):
         """Coroutine. When called with no arguments, .tpc_commit() commits a TPC
         transaction previously prepared with .tpc_prepare().
@@ -2599,7 +2658,8 @@ class Connection(object):
             self.autocommit = previous_autocommit_mode
         self._xid = None
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def tpc_rollback(self, xid=None):
         """Coroutine. When called with no arguments, .tpc_rollback() rolls back a TPC
         transaction. It may be called before or after .tpc_prepare().
@@ -2637,7 +2697,8 @@ class Connection(object):
             self.autocommit = previous_autocommit_mode
         self._xid = None
 
-    @coroutine_wrapper
+    @public_coroutine_decorator
+    @asyncio.coroutine
     def tpc_recover(self):
         """Coroutine. Returns a list of pending transaction IDs suitable for use with
         .tpc_commit(xid) or .tpc_rollback(xid).
@@ -2658,7 +2719,13 @@ class Connection(object):
     @property
     def closed(self):
         #FIXME: should we be locking?
-        return self._writer == None
+        
+        try:
+            self._lock.acquire()
+            return self._writer == None or self.close_future is not None
+        finally:
+            self._lock.release()
+        
 
     #not a wrapper, this isn't a public facing call
     @asyncio.coroutine

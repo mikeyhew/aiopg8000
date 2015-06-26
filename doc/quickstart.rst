@@ -108,7 +108,7 @@ turned on by using the autocommit property of the connection.
     yield from cur = conn.cursor()
     yield from cur.execute("vacuum")
     conn.autocommit = False
-    yield from cursor.close()
+    yield from cursor.yield_close()
 
 When communicating with the server, aiopg8000 uses the character set that the
 server asks it to use (the client encoding). By default the client encoding is
