@@ -78,7 +78,7 @@ python3 -m aiopg8000.tests.performance
 There's a stress test that is run by doing:
 
 {{{
-python3 ./multi
+./multi
 }}}
 
 The idea is to set {{{shared_buffers}}} in postgresql.conf to 128kB, and then

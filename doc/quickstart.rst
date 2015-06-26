@@ -67,7 +67,7 @@ query the table:
             id, title = row
             print("id = %s, title = %s" % (id, title))
         yield from conn.commit()
-    asyncio.get_event_loop().run_until_complete(example)
+    asyncio.get_event_loop().run_until_complete(example())
 
 Another query, using some PostgreSQL functions (must run in an async function to use ``yield from``):
 

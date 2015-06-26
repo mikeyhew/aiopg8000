@@ -107,6 +107,7 @@ class RLockWrapper:
         if self._level == 0:
             self._lock_thread = None
         self._lock.release()
+        return False
 
     def acquire(self, blocking=1):
         result = self._lock.acquire(blocking)
@@ -1150,14 +1151,7 @@ class Cursor():
     def poll_rows(self):
         yield from self._check_sane()
 
-        if self.portal_suspended:
-            yield from self._c.send_EXECUTE(self)
-            yield from self._c._write(SYNC_MSG)
-            yield from self._c._flush()
-            yield from self._c.handle_messages(self)
-            if not self.portal_suspended:
-                yield from self._c.close_portal(self)
-
+        yield from self._c.poll_rows(self)
     @asyncio.coroutine
     def get_next_row(self):
         yield from self._check_sane()
@@ -1980,10 +1974,10 @@ class Connection(object):
     #don't use the wrapper, because the wrapper calls this function
     @asyncio.coroutine
     def _close(self):
+        if self._writer is None:
+            return
         try:
             #Why error if the connection is already close, just continue silently
-            if self._writer is None:
-                return
             # Byte1('X') - Identifies the message as a terminate message.
             # Int32(4) - Message length, including self.
             yield from self._write(TERMINATE_MSG)
@@ -1997,7 +1991,8 @@ class Connection(object):
             raise OperationalError(str(exc_info()[1]))
         finally:
             #self._usock.close()
-            yield from self._close_aiostream()
+            if self._writer is not None:
+                yield from self._close_aiostream()
             self._writer = None
             self._reader = None
 
@@ -2411,6 +2406,17 @@ class Connection(object):
                 self._commands_with_count = (
                     b("INSERT"), b("DELETE"), b("UPDATE"), b("MOVE"),
                     b("FETCH"), b("COPY"))
+
+    @coroutine_wrapper
+    def poll_rows(self, cur):
+
+        if cur.portal_suspended:
+            yield from self.send_EXECUTE(cur)
+            yield from self._write(SYNC_MSG)
+            yield from self._flush()
+            yield from self.handle_messages(cur)
+            if not cur.portal_suspended:
+                yield from self.close_portal(cur)
 
     def array_inspect(self, value):
         # Check if array has any values.  If not, we can't determine the proper
