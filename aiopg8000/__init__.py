@@ -85,7 +85,9 @@ def connect( stream_generator, user=None, database=None, password=None, loop=Non
         A :class:`Connection` object.
     """
     conn = Connection()
-
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    
     yield from conn.initialize(stream_generator, user, database, password, loop)
     return conn
 

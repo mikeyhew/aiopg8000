@@ -124,7 +124,7 @@ encoding is by using an SQL command. For example:
     yield from cur.execute("SHOW CLIENT_ENCODING")
     yield from cur.fetchone()
     #['UTF8']
-    yield from cur.close()
+    yield from cur.yield_close()
 
 JSON is sent to the server serialized, and returned de-serialized. Here's an
 example:
@@ -137,5 +137,5 @@ example:
     yield from cur.execute("SELECT cast(%s as json)", (json.dumps(val),))
     print ((yield from cur.fetchone()))
     #[['Apollo 11 Cave', True, 26.003]]
-    yield from cur.close()
-    yield from conn.close()
+    yield from cur.yield_close()
+    yield from conn.yield_close()

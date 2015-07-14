@@ -6,7 +6,7 @@ import threading
 from struct import pack
 from hashlib import md5
 from decimal import Decimal
-from collections import deque, defaultdict
+from collections import deque, defaultdict, namedtuple
 from itertools import count, islice
 from .six.moves import map
 from .six import b, PY2, integer_types, next, PRE_26, text_type, u, binary_type
@@ -23,6 +23,7 @@ import asyncio
 import functools
 import logging
 
+from .mogrify import mogrify, FormatException as FormatException
 
 
 log = logging.getLogger('aiopg8000')
@@ -60,7 +61,7 @@ __author__ = "Mathieu Fenniak"
 def public_coroutine_decorator(func):
     """
     This decorator is used on public facing coroutine methods to wrap them in case
-    an unexpected error is thrown during their use. If an expected error is thrown,
+    an unexpected error is thrown during their use. If an unexpected error is thrown,
     this will ensure the connection is closed.
     """
     assert asyncio.iscoroutinefunction(func)
@@ -865,7 +866,7 @@ def int_in(data, offset, length):
     return int(data[offset: offset + length])
 
 
-class Cursor():
+class Cursor(object):
     """A cursor object is returned by the :meth:`~Connection.cursor` method of
     a connection. It has the following attributes and methods:
 
@@ -938,6 +939,9 @@ class Cursor():
 
     description = property(lambda self: self._getDescription())
 
+    ColumnDescription = namedtuple('ColumnDescription', ['name', 'type_code', 'display_size'
+                                                        , 'internal_size', 'precision', 'scale', 'null_ok'])
+
     def _getDescription(self):
         if self.ps is None:
             return None
@@ -947,7 +951,7 @@ class Cursor():
         columns = []
         for col in row_desc:
             columns.append(
-                (col["name"], col["type_oid"], None, None, None, None, None))
+                Cursor.ColumnDescription(col["name"], col["type_oid"], None, None, None, None, None))
         return columns
 
     @property
@@ -1011,6 +1015,17 @@ class Cursor():
                 raise exc_info()[1]
         finally:
             self._c._lock.release()
+
+    @asyncio.coroutine
+    def mogrify(self,formatsql,params):
+        """Coroutine. Format an sql statement, and return the resulting formated sql statement.
+        Uses pyformat exclusively, in the spirit of psycopg2, except that it only allows
+        dictionary/named parameters. Will throw a ProgrammingError if there is a formatting error. 
+        """
+        try:
+            return mogrify(formatsql,params)
+        except FormatException as e:
+            raise ProgrammingError('Error formatting sql', formatsql, params) from e
 
     @asyncio.coroutine
     def executemany(self, operation, param_sets):
@@ -1188,6 +1203,13 @@ class Cursor():
         finally:
             self._c._lock.release()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self,*exc):
+        self.close()
+        return False
+    
     """
     def __next__(self):
         try:
@@ -1241,6 +1263,7 @@ COPY_IN_RESPONSE = b("G")
 COPY_OUT_RESPONSE = b("H")
 EMPTY_QUERY_RESPONSE = b("I")
 
+QUERY = b('Q')
 BIND = b("B")
 PARSE = b("P")
 EXECUTE = b("E")
@@ -1490,7 +1513,11 @@ class Connection(object):
             raise InterfaceError("communication error", exc_info()[1])
         """
         self._flush = self._writer.drain
-        self._read = self._reader.read
+
+        @asyncio.coroutine
+        def _yield_read(n):
+            return (yield from self._reader.readexactly(n))
+        self._read = _yield_read
 
         @asyncio.coroutine
         def _yield_close_aiostream():
@@ -2055,7 +2082,7 @@ class Connection(object):
         try:
             self._lock.acquire()
             if self.close_future is None:
-                self.close_future = asyncio.async(self.yield_close())
+                self.close_future = asyncio.async(self.yield_close(), loop=self.loop)
             
             assert self.close_future is not None
             return self.close_future
@@ -2386,7 +2413,8 @@ class Connection(object):
         try:
             while code != READY_FOR_QUERY:
                 code, data_len = ci_unpack( (yield from self._read(5)) )
-                yield from self.message_types[code]( (yield from self._read(data_len - 4)), cursor)
+                buf = yield from self._read(data_len - 4)
+                yield from self.message_types[code](buf, cursor)
         except:
             yield from self._yield_close()
             raise
@@ -2733,8 +2761,12 @@ class Connection(object):
         if self.closed:
             raise InterfaceError("connection is closed")
 
+    def __enter__(self):
+        return self
 
-
+    def __exit__(self,*exc):
+        self.close()
+        return False
 
 
 # pg element oid -> pg array typeoid

@@ -23,7 +23,6 @@ class Tests(unittest.TestCase):
         try:
             c = yield from self.db.cursor()
             try:
-                c = yield from self.db.cursor()
                 yield from c.execute("DROP TABLE t1")
             except aiopg8000.DatabaseError:
                 e = exc_info()[1]
@@ -50,11 +49,11 @@ class Tests(unittest.TestCase):
                 (5, 10000, None))
             yield from self.db.commit()
         finally:
-            yield from c.close()
+            yield from c.yield_close()
 
     @async_test
     def tearDown(self):
-        yield from self.db.close()
+        yield from self.db.yield_close()
 
     @async_test
     def testParallelQueries(self):
@@ -75,10 +74,43 @@ class Tests(unittest.TestCase):
                         break
                     f1, f2, f3 = row
         finally:
-            yield from c1.close()
-            yield from c2.close()
+            yield from c1.yield_close()
+            yield from c2.yield_close()
 
         yield from self.db.rollback()
+
+    @async_test
+    def testRollback(self):
+        try:
+            aiopg8000.paramstyle = "pyformat"
+            c = yield from self.db.cursor()
+
+            yield from c.execute("SELECT f1, f2, f3 FROM t1 LIMIT 1")
+
+            f1,f2_0,f3 = yield from c.fetchone()
+
+            
+            f2_1 = f2_0 + 1
+
+
+            yield from c.execute("UPDATE t1 SET f2=%(f2)s WHERE f1=%(f1)s", {'f1': f1, 'f2': f2_1})
+
+            yield from c.execute("SELECT f2 FROM t1 WHERE f1=%(f1)s", {'f1': f1})
+
+            f2_2, = yield from c.fetchone()
+
+            self.assertEqual(f2_1,f2_2)
+
+            yield from self.db.rollback()
+
+            yield from c.execute("SELECT f2 FROM t1 WHERE f1=%(f1)s", {'f1': f1})
+
+            f2_3, = yield from c.fetchone()
+
+            self.assertEqual(f2_0,f2_3)
+
+        finally:
+            yield from c.yield_close()
 
     @async_test
     def testQmark(self):
@@ -95,7 +127,7 @@ class Tests(unittest.TestCase):
             yield from self.db.rollback()
         finally:
             aiopg8000.paramstyle = orig_paramstyle
-            yield from c1.close()
+            yield from c1.yield_close()
 
     @async_test
     def testNumeric(self):
@@ -112,7 +144,7 @@ class Tests(unittest.TestCase):
             yield from self.db.rollback()
         finally:
             aiopg8000.paramstyle = orig_paramstyle
-            yield from c1.close()
+            yield from c1.yield_close()
 
     @async_test
     def testNamed(self):
@@ -130,7 +162,7 @@ class Tests(unittest.TestCase):
             yield from self.db.rollback()
         finally:
             aiopg8000.paramstyle = orig_paramstyle
-            yield from c1.close()
+            yield from c1.yield_close()
 
     @async_test
     def testFormat(self):
@@ -147,7 +179,7 @@ class Tests(unittest.TestCase):
             yield from self.db.commit()
         finally:
             aiopg8000.paramstyle = orig_paramstyle
-            yield from c1.close()
+            yield from c1.yield_close()
 
     @async_test
     def testPyformat(self):
@@ -165,7 +197,7 @@ class Tests(unittest.TestCase):
             yield from self.db.commit()
         finally:
             aiopg8000.paramstyle = orig_paramstyle
-            yield from c1.close()
+            yield from c1.yield_close()
 
     @async_test
     def testArraysize(self):
@@ -176,7 +208,7 @@ class Tests(unittest.TestCase):
             retval = yield from c1.fetchmany()
             self.assertEqual(len(retval), c1.arraysize)
         finally:
-            yield from c1.close()
+            yield from c1.yield_close()
         yield from self.db.commit()
 
     def testDate(self):
@@ -233,7 +265,7 @@ class Tests(unittest.TestCase):
             yield from c1.execute("DELETE FROM t1")
             self.assertEqual(5, c1.rowcount)
         finally:
-            yield from c1.close()
+            yield from c1.yield_close()
         yield from self.db.commit()
 
     @async_test
@@ -247,7 +279,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(1, len((yield from cursor.fetchmany())))
             self.assertEqual(0, len((yield from cursor.fetchmany())))
         finally:
-            yield from cursor.close()
+            yield from cursor.yield_close()
         yield from self.db.commit()
 
     @async_test
@@ -265,7 +297,7 @@ class Tests(unittest.TestCase):
                 assert next_f1 > f1
                 f1 = next_f1
         except:
-            yield from cursor.close()
+            yield from cursor.yield_close()
 
         yield from self.db.commit()
 
@@ -278,7 +310,7 @@ class Tests(unittest.TestCase):
             cursor = yield from self.db.cursor()
             yield from cursor.execute("vacuum")
         finally:
-            yield from cursor.close()
+            yield from cursor.yield_close()
 
     # If autocommit is on and we do an operation that returns more rows than
     # the cache holds, make sure exception raised.
@@ -295,7 +327,7 @@ class Tests(unittest.TestCase):
                                 str(aiopg8000.core.Connection._row_cache_size + 1) + ")")
 
             finally:
-                yield from cursor.close()
+                yield from cursor.yield_close()
 
         self.assertRaises(aiopg8000.InterfaceError, test_wrapper)
 if __name__ == "__main__":
