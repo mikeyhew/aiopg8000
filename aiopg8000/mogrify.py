@@ -1,6 +1,44 @@
+"""
+--------------------------------------------------------------------------------
+The MIT License (MIT)
 
+Copyright (c) 2014 Datalanche, Inc.
 
-#https://github.com/datalanche/node-pg-format/blob/master/lib/index.js
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------------
+
+See original: https://github.com/datalanche/node-pg-format/blob/master/lib/index.js
+
+Modified by Azriel Fasten
+
+Description:
+
+Implementation of
+[PostgreSQL format()](http://www.postgresql.org/docs/9.3/static/functions-string.html#FUNCTIONS-STRING-FORMAT)
+to safely create dynamic SQL queries. SQL identifiers and literals are escaped to help prevent SQL injection.
+The behavior is equivalent to
+[PostgreSQL format()](http://www.postgresql.org/docs/9.3/static/functions-string.html#FUNCTIONS-STRING-FORMAT).
+Ported from [node-pg-format](https://github.com/datalanche/node-pg-format), which is released under the MIT license.
+This file is released under the same license.
+
+"""
+
 
 
 import datetime
