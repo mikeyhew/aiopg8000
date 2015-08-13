@@ -52,4 +52,5 @@ def async_test(f):
 def stream_generator():
     return (yield from asyncio.open_connection(host=db_connect0['host'], port=db_connect0['port'], ssl=db_connect0['ssl']))
 
-db_connect = dict(user=db_connect0['user'], password=db_connect0['password'], database=db_connect0['database'], stream_generator=stream_generator)
+db_connect = dict( user=db_connect0['user'], password=db_connect0['password'], database=db_connect0['database'], stream_generator=stream_generator
+                 , prepared=db_connect0.get('prepared', True))

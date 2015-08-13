@@ -56,6 +56,20 @@ class Tests(unittest.TestCase):
         yield from self.db.yield_close()
 
     @async_test
+    def testSimpleQuery(self):
+        try:
+            cursor = yield from self.db.cursor()
+            cursor.arraysize = 2
+            yield from cursor.execute_simple_query("SELECT * FROM t1")
+            self.assertEqual(2, len((yield from cursor.fetchmany())))
+            self.assertEqual(2, len((yield from cursor.fetchmany())))
+            self.assertEqual(1, len((yield from cursor.fetchmany())))
+            self.assertEqual(0, len((yield from cursor.fetchmany())))
+        finally:
+            yield from cursor.yield_close()
+        yield from self.db.commit()
+
+    @async_test
     def testParallelQueries(self):
         try:
             c1 = yield from self.db.cursor()
@@ -294,7 +308,7 @@ class Tests(unittest.TestCase):
             f1 = 0
             for row in cursor:
                 next_f1 = row[0]
-                assert next_f1 > f1
+                self.asserTrue(next_f1 > f1)
                 f1 = next_f1
         except:
             yield from cursor.yield_close()
@@ -311,6 +325,7 @@ class Tests(unittest.TestCase):
             yield from cursor.execute("vacuum")
         finally:
             yield from cursor.yield_close()
+            self.db.autocommit = False
 
     # If autocommit is on and we do an operation that returns more rows than
     # the cache holds, make sure exception raised.
@@ -328,7 +343,39 @@ class Tests(unittest.TestCase):
 
             finally:
                 yield from cursor.yield_close()
+                self.db.autocommit = False
 
         self.assertRaises(aiopg8000.InterfaceError, test_wrapper)
+
+
+    @async_test
+    def testMogrifyPercent(self):
+        with (yield from self.db.cursor()) as cur:
+            sql = "SELECT '%%'"
+            sql = yield from cur.mogrify(sql)
+            yield from cur.execute(sql)
+            pct, = yield from cur.fetchone()
+
+            self.assertEqual(pct, '%')
+
+
+    @async_test
+    def testSimpleMutliStatement(self):
+        with (yield from self.db.cursor()) as cur:
+            sql = "SELECT * FROM t1 FOR UPDATE; SELECT 1;"
+            yield from cur.execute(sql,prepared=False)
+
+            val, = yield from cur.fetchone()
+            self.assertEqual(val, 1)
+    @async_test
+    def testSimpleQueries(self):
+        with (yield from self.db.cursor()) as cur:
+            sql = "SELECT 1,2; SELECT 1"
+            yield from cur.execute(sql,prepared=False)
+
+            val, = yield from cur.fetchone()
+            self.assertEqual(val, 1)
+            self.assertEqual(cur.rowcount, 1)
+
 if __name__ == "__main__":
     unittest.main()

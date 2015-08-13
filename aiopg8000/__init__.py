@@ -40,7 +40,7 @@ del get_versions
 __author__ = "Mathieu Fenniak"
 
 @asyncio.coroutine
-def connect( stream_generator, user=None, database=None, password=None, loop=None, **kwargs):
+def connect( stream_generator, user=None, database=None, password=None, prepared=True, loop=None, **kwargs):
     """Creates a connection to a PostgreSQL database.
 
     This function is part of the `DBAPI 2.0 specification
@@ -88,7 +88,7 @@ def connect( stream_generator, user=None, database=None, password=None, loop=Non
     if loop is None:
         loop = asyncio.get_event_loop()
     
-    yield from conn.initialize(stream_generator, user, database, password, loop)
+    yield from conn.initialize(stream_generator, user, database, password, prepared, loop)
     return conn
 
 apilevel = "2.0"

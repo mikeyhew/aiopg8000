@@ -22,11 +22,22 @@ import time
 import asyncio
 import functools
 import logging
+import io
+import re
 
 from .mogrify import mogrify, FormatException as FormatException
 
 
 log = logging.getLogger('aiopg8000')
+
+
+def print_log(*args,**kwargs):
+    #s = io.StringIO()
+    #kwargs['file'] = s
+    #kwargs['flush'] = True
+    #print (*args,**kwargs)
+    #log.debug(s.getvalue())
+    pass
 
 # Copyright (c) 2007-2009, Mathieu Fenniak
 # All rights reserved.
@@ -76,12 +87,8 @@ def public_coroutine_decorator(func):
         except Error:
             raise
         except:
-            #log.exception('Exception caught around %s' % (func0,))
-
             if not self.closed:
-                #log.info('closing connection')
                 yield from self.close()
-                #log.info('finished closing connection')
             raise
 
     return replacement
@@ -359,7 +366,13 @@ class ProgrammingError(DatabaseError):
     This exception is part of the `DBAPI 2.0 specification
     <http://www.python.org/dev/peps/pep-0249/>`_.
     """
-    pass
+    def __init__(self,*args,**kwargs):
+        super(ProgrammingError, self).__init__(*args,**kwargs)
+
+        self.pgerror = None
+        self.pgcode = None
+        self.cursor = None
+        self.diag = None
 
 
 class NotSupportedError(DatabaseError):
@@ -704,6 +717,7 @@ def timestamp_recv_float(data, offset, length):
     return utcfromtimestamp(EPOCH_SECONDS + d_unpack(data, offset)[0])
 
 
+
 # data is 64-bit integer representing microseconds since 2000-01-01
 def timestamp_send_integer(v):
     if v == datetime.datetime.max:
@@ -806,23 +820,33 @@ def interval_recv_float(data, offset, length):
 
 
 def int8_recv(data, offset, length):
-    return q_unpack(data, offset)[0]
+    buf = data[offset:offset+length]
+    return int.from_bytes(buf,byteorder='big')
+    #return q_unpack(buf, 0)[0]
 
 
 def int2_recv(data, offset, length):
-    return h_unpack(data, offset)[0]
+    buf = data[offset:offset+length]
+    return int.from_bytes(buf,byteorder='big')
+    #return h_unpack(buf, 0)[0]
 
 
 def int4_recv(data, offset, length):
-    return i_unpack(data, offset)[0]
+    buf = data[offset:offset+length]
+    result = int.from_bytes(buf,byteorder='big')
+    print_log ('data:', data,'offset:',offset,'length:',length,'buf:',buf,'result:',result,flush=True)
+    return result
+    #return i_unpack(buf, 0)[0]
 
 
 def float4_recv(data, offset, length):
-    return f_unpack(data, offset)[0]
+    buf = data[offset:offset+length]
+    return f_unpack(buf, 0)[0]
 
 
 def float8_recv(data, offset, length):
-    return d_unpack(data, offset)[0]
+    buf = data[offset:offset+length]
+    return d_unpack(buf, 0)[0]
 
 
 def bytea_send(v):
@@ -863,8 +887,20 @@ def null_send(v):
 
 
 def int_in(data, offset, length):
-    return int(data[offset: offset + length])
+    buf = data[offset:offset+length]
 
+    print_log ('data:', data,'offset:',offset,'length:',length,'buf:',buf,flush=True)
+    result = int(buf)
+
+    return result
+
+def float_in(data, offset, length):
+    buf = data[offset:offset+length]
+
+    print_log ('data:', data,'offset:',offset,'length:',length,'buf:',buf,flush=True)
+    result = float(buf)
+
+    return result
 
 class Cursor(object):
     """A cursor object is returned by the :meth:`~Connection.cursor` method of
@@ -964,13 +1000,35 @@ class Cursor(object):
         elif self._c.closed:
             raise InterfaceError("connection is closed")
         yield from self._c._check_sane()
+
+    def execute_simple_query(self,operation, args=None, stream=None):
+
+        try:
+            self._c._lock.acquire()
+            yield from self._check_sane()
+
+            self.stream = stream
+
+            if not self._c.in_transaction and not self._c.autocommit:
+                yield from self._c.execute_simple_query(self, "begin transaction", None)
+            #else:
+            yield from self._c.execute_simple_query(self, operation, args)
+        except AttributeError:
+            if self._c is None:
+                raise InterfaceError("Cursor closed")
+            elif self._c.closed:
+                raise InterfaceError("connection is closed")
+            else:
+                raise exc_info()[1]
+        finally:
+            self._c._lock.release()
     ##
     # Executes a database operation.  Parameters may be provided as a sequence
     # or mapping and will be bound to variables in the operation.
     # <p>
     # Stability: Part of the DBAPI 2.0 specification.
     @asyncio.coroutine
-    def execute(self, operation, args=None, stream=None):
+    def execute(self, operation, args=None, stream=None, prepared=None):
         """Coroutine. Executes a database operation.  Parameters may be provided as a
         sequence, or as a mapping, depending upon the value of
         :data:`pg8000.paramstyle`.
@@ -997,15 +1055,18 @@ class Cursor(object):
 
             .. versionadded:: 1.9.11
         """
+        yield from self._check_sane()
         try:
             self._c._lock.acquire()
-            yield from self._check_sane()
+
+            prepared = self._c.prepared if prepared is None else prepared
+            c_execute = self._c.execute_simple_query if not prepared else self._c.execute
 
             self.stream = stream
 
             if not self._c.in_transaction and not self._c.autocommit:
-                yield from self._c.execute(self, "begin transaction", None)
-            yield from self._c.execute(self, operation, args)
+                yield from c_execute(self, "begin transaction", None)
+            yield from c_execute(self, operation, args)
         except AttributeError:
             if self._c is None:
                 raise InterfaceError("Cursor closed")
@@ -1017,7 +1078,7 @@ class Cursor(object):
             self._c._lock.release()
 
     @asyncio.coroutine
-    def mogrify(self,formatsql,params):
+    def mogrify(self,formatsql,params={}):
         """Coroutine. Format an sql statement, and return the resulting formated sql statement.
         Uses pyformat exclusively, in the spirit of psycopg2, except that it only allows
         dictionary/named parameters. Will throw a ProgrammingError if there is a formatting error. 
@@ -1025,7 +1086,7 @@ class Cursor(object):
         try:
             return mogrify(formatsql,params)
         except FormatException as e:
-            raise ProgrammingError('Error formatting sql', formatsql, params) from e
+            raise ProgrammingError('Error formatting sql:\n%s\n\nparams:\n%s' % (formatsql, params)) from e
 
     @asyncio.coroutine
     def executemany(self, operation, param_sets):
@@ -1305,6 +1366,30 @@ IDLE_IN_FAILED_TRANSACTION = b("E")
 arr_trans = dict(zip(map(ord, u("[] 'u")), list(u('{}')) + [None] * 3))
 
 
+message_2_name = {
+    NOTICE_RESPONSE: 'NOTICE_RESPONSE',
+    AUTHENTICATION_REQUEST: 'AUTHENTICATION_REQUEST',
+    PARAMETER_STATUS: 'PARAMETER_STATUS',
+    BACKEND_KEY_DATA: 'BACKEND_KEY_DATA',
+    READY_FOR_QUERY: 'READY_FOR_QUERY',
+    ROW_DESCRIPTION: 'ROW_DESCRIPTION',
+    ERROR_RESPONSE: 'ERROR_RESPONSE',
+    EMPTY_QUERY_RESPONSE: 'EMPTY_QUERY_RESPONSE',
+    DATA_ROW: 'DATA_ROW',
+    COMMAND_COMPLETE: 'COMMAND_COMPLETE',
+    PARSE_COMPLETE: 'PARSE_COMPLETE',
+    BIND_COMPLETE: 'BIND_COMPLETE',
+    CLOSE_COMPLETE: 'CLOSE_COMPLETE',
+    PORTAL_SUSPENDED: 'PORTAL_SUSPENDED',
+    NO_DATA: 'NO_DATA',
+    PARAMETER_DESCRIPTION: 'PARAMETER_DESCRIPTION',
+    NOTIFICATION_RESPONSE: 'NOTIFICATION_RESPONSE',
+    COPY_DONE: 'COPY_DONE',
+    COPY_DATA: 'COPY_DATA',
+    COPY_IN_RESPONSE: 'COPY_IN_RESPONSE',
+    COPY_OUT_RESPONSE: 'COPY_OUT_RESPONSE',
+}
+
 class MulticastDelegate(object):
     def __init__(self):
         self.delegates = []
@@ -1419,12 +1504,13 @@ class Connection(object):
     @public_coroutine_decorator
     @asyncio.coroutine
     def initialize(
-            self, stream_generator, user, database, password, loop):
+            self, stream_generator, user, database, password, prepared, loop):
         self.loop = None
         self.close_future = None
         self._writer = None
         self._reader = None
         
+        self.prepared = prepared
         self.loop = loop
         self._client_encoding = "utf8"
         self._commands_with_count = (
@@ -1592,11 +1678,22 @@ class Connection(object):
 
         def unknown_out(v):
             return str(v).encode(self._client_encoding)
+        def timestamp_in(data, offset, length):
+            buf = data[offset: offset+length]
+
+            buf = buf.decode(self._client_encoding)
+            #FIXME the decode here should prolly be the client encoding
+            try:
+                return datetime.datetime.strptime(buf,"%Y-%m-%d %H:%M:%S")
+            except ValueError as e:
+                return datetime.datetime.strptime(buf,"%Y-%m-%d %H:%M:%S.%f")
 
         trans_tab = dict(zip(map(ord, u('{}')), u('[]')))
         glbls = {'Decimal': Decimal}
 
-        def array_in(data, idx, length):
+        def numeric_array_in(data, idx, length):
+            buf = data[idx:idx+length]
+
             arr = []
             prev_c = None
             for c in data[idx:idx+length].decode(
@@ -1610,6 +1707,142 @@ class Connection(object):
                 arr.append(c)
                 prev_c = c
             return eval(''.join(arr), glbls)
+        def generic_array_in(data, idx, length):
+
+            buf = data[idx:idx+length]
+            print_log ('array_in.buf:',buf,flush=True)
+
+            buf = buf.decode(self._client_encoding)
+
+            result = []
+            stack = [result]
+            top = stack[-1]
+
+
+            bare_unit = r'((?:[^\{\}\"\,]|(?:\\.))+)'
+            quoted_unit = r'(\"(?:[^\"\\]|(?:\\.))*\")'
+            #unit = '(?:%s|%s)' %(bare_unit, quoted_unit)
+            bare_unit = re.compile(bare_unit)
+            quoted_unit = re.compile(quoted_unit)
+
+            i = 0
+            while i < len(buf):
+                c = buf[i]
+                if c == '{':
+                    new_list = []
+                    top.append(new_list)
+                    stack += [new_list]
+                    top = stack[-1]
+
+                elif c == '}':
+                    stack.pop()
+                    top = stack[-1]
+                elif c == ',':
+                    pass
+                else:
+
+                    match = bare_unit.match(buf,i)
+
+                    if match is None:
+                        match = quoted_unit.match(buf,i)
+
+                    print_log('value:',(match.group(1) if match is not None else None)
+                                , 'i:',i, 'buf:',buf, 'buf[i:]:',buf[i:]
+                                ,'groups:',(match.groups() if match is not None else None))
+                    value = match.group(1)
+
+
+                    top.append(value)
+                    i = match.end()
+                    continue
+
+
+                i += 1
+
+            result = result[0]
+            #print_log('result:',result)
+            return result
+
+        def unquote_array_value(value):
+            #print_log('value0:',value)
+            if len(value) > 0 and value[0] == '"':
+                value = value[1:-1]
+
+            result = []
+            escape = False
+            for c in value:
+                if escape:
+                    result += [c]
+                    escape = False
+                    continue
+                if c == '\\':
+                    escape = True
+                    continue
+                result += [c]
+            value = ''.join(result)
+
+            #print_log('value1:',value)
+            return value
+
+        def recursive_map(fun, data0):
+            assert isinstance(data0, list)
+            result = list(data0)
+
+            for i,value in enumerate(result):
+                if isinstance(value, (list)):
+                    result[i] = recursive_map(fun, value)
+                    continue
+                assert isinstance(value, str), (value, type(value))
+                result[i] = fun(value)
+            return result
+
+        def text_array_in(data, idx, length):
+            results = generic_array_in(data, idx, length)
+            translate = {'NULL': None}
+
+            return recursive_map( lambda x: translate.get(x,unquote_array_value(x))
+                                , results)
+
+        def bool_array_in(data, idx, length):
+            results = generic_array_in(data, idx, length)
+
+
+            translate = {'t': True, 'f': False, 'NULL': None}
+            return recursive_map( lambda x: translate[x]
+                                , results)
+        def int_array_in(data, idx, length):
+            results = generic_array_in(data, idx, length)
+
+            #print_log('int_array_in.results:',results)
+            return recursive_map( lambda x: (int(x) if x != 'NULL' else None)
+                                , results)
+
+        def int2_array_in(data, idx, length):
+            return int_array_in(data,idx,length)
+        def int4_array_in(data, idx, length):
+            return int_array_in(data,idx,length)
+        def int8_array_in(data, idx, length):
+            return int_array_in(data,idx,length)
+        def float_array_in(data, idx, length):
+
+            results = generic_array_in(data, idx, length)
+
+            translate = {
+                  'NULL': None
+                , 'NaN': float('nan')
+                , 'Infinity': float('inf')
+                , '+Infinity': float('inf')
+                , '-Infinity': -float('inf')
+                }
+            return recursive_map( lambda x: (float(x) if x not in translate else translate[x])
+                                , results)
+
+        def float4_array_in(data, idx, length):
+            return float_array_in(data, idx, length)
+        def float8_array_in(data, idx, length):
+            return float_array_in(data, idx, length)
+
+
 
         def array_recv(data, idx, length):
             final_idx = idx + length
@@ -1667,9 +1900,15 @@ class Connection(object):
             def bool_recv(data, offset, length):
                 return data[offset] == 1
 
+
             def json_in(data, offset, length):
                 return loads(
                     str(data[offset: offset + length], self._client_encoding))
+
+        def bool_in(data, offset, length):
+            buf = data[offset:offset+length]
+            print_log('bool_in(), buf:',buf,flush=True)
+            return buf == b('t')
 
         def time_in(data, offset, length):
             hour = int(data[offset:offset + 2])
@@ -1731,7 +1970,7 @@ class Connection(object):
                 1114: (FC_BINARY, timestamp_recv_float),  # timestamp w/ tz
                 1184: (FC_BINARY, timestamptz_recv_float),
                 1186: (FC_BINARY, interval_recv_integer),
-                1231: (FC_TEXT, array_in),  # NUMERIC[]
+                1231: (FC_TEXT, numeric_array_in),  # NUMERIC[]
                 1263: (FC_BINARY, array_recv),  # cstring[]
                 1700: (FC_TEXT, numeric_in),  # NUMERIC
                 2275: (FC_BINARY, text_recv),  # cstring
@@ -1739,12 +1978,54 @@ class Connection(object):
                 3802: (FC_TEXT, json_in),  # jsonb
             })
 
+        self.fc0_pg_types = defaultdict(
+            lambda: (FC_TEXT, text_recv), {
+                16: (FC_BINARY, bool_in),  # boolean
+                17: (FC_BINARY, bytea_recv),  # bytea
+                19: (FC_BINARY, text_recv),  # name type
+                20: (FC_BINARY, int_in),  # int8
+                21: (FC_BINARY, int_in),  # int2
+                22: (FC_TEXT, vector_in),  # int2vector
+                23: (FC_BINARY, int_in),  # int4
+                25: (FC_BINARY, text_recv),  # TEXT type
+                26: (FC_TEXT, int_in),  # oid
+                28: (FC_TEXT, int_in),  # xid
+                114: (FC_TEXT, json_in),  # json
+                700: (FC_BINARY, float_in),  # float4
+                701: (FC_BINARY, float_in),  # float8
+                705: (FC_BINARY, text_recv),  # unknown
+                829: (FC_TEXT, text_recv),  # MACADDR type
+                1000: (FC_BINARY, bool_array_in),  # BOOL[]
+                1003: (FC_BINARY, text_array_in),  # NAME[]
+                1005: (FC_BINARY, int2_array_in),  # INT2[]
+                1007: (FC_BINARY, int4_array_in),  # INT4[]
+                1009: (FC_BINARY, text_array_in),  # TEXT[]
+                1014: (FC_BINARY, text_array_in),  # CHAR[]
+                1015: (FC_BINARY, text_array_in),  # VARCHAR[]
+                1016: (FC_BINARY, int8_array_in),  # INT8[]
+                1021: (FC_BINARY, float4_array_in),  # FLOAT4[]
+                1022: (FC_BINARY, float8_array_in),  # FLOAT8[]
+                1042: (FC_BINARY, text_recv),  # CHAR type
+                1043: (FC_BINARY, text_recv),  # VARCHAR type
+                1082: (FC_TEXT, date_in),  # date
+                1083: (FC_TEXT, time_in),
+                1114: (FC_BINARY, timestamp_in),  # timestamp w/ tz
+                1184: (FC_BINARY, timestamptz_recv_float),
+                1186: (FC_BINARY, interval_recv_integer),
+                1231: (FC_TEXT, numeric_array_in),  # NUMERIC[]
+                1263: (FC_BINARY, array_recv),  # cstring[]
+                1700: (FC_TEXT, numeric_in),  # NUMERIC
+                2275: (FC_BINARY, text_recv),  # cstring
+                2950: (FC_BINARY, uuid_recv),  # uuid
+                3802: (FC_TEXT, json_in),  # jsonb
+            })
         self.py_types = {
             type(None): (-1, FC_BINARY, null_send),  # null
             bool: (16, FC_BINARY, bool_send),
             int: (705, FC_TEXT, unknown_out),
             float: (701, FC_BINARY, d_pack),  # float8
             str: (705, FC_TEXT, text_out),  # unknown
+            #str: (25, FC_BINARY, text_out),  # text
             datetime.date: (1082, FC_TEXT, date_out),  # date
             datetime.time: (1083, FC_TEXT, time_out),  # time
             1114: (1114, FC_BINARY, timestamp_send_integer),  # timestamp
@@ -1865,7 +2146,40 @@ class Connection(object):
         if msg_dict[RESPONSE_CODE] == "28000":
             self.error = InterfaceError("md5 password authentication failed")
         else:
-            self.error = ProgrammingError(*tuple(v for k, v in responses))
+            error_info = tuple(v for k, v in responses)
+            self.error = ProgrammingError(*error_info)
+            self.error.pgcode = msg_dict.get(RESPONSE_CODE,None)
+            self.error.pgerror = msg_dict.get(RESPONSE_MSG,None)
+
+            Diagnostics = namedtuple('Diagnostics', [ 'column_name', 'constraint_name', 'context'
+                                                  , 'datatype_name', 'internal_position', 'internal_query'
+                                                  , 'message_detail', 'message_hint', 'message_primary'
+                                                  , 'schema_name', 'severity', 'source_file', 'source_function'
+                                                  , 'source_line', 'sqlstate', 'statement_position', 'table_name'])
+
+            diag = dict([(field,None) for field in Diagnostics._fields])
+            diag['sqlstate'] = msg_dict.get(RESPONSE_CODE,None)
+            diag['severity'] = msg_dict.get(RESPONSE_SEVERITY,None)
+            diag['message_primary'] = msg_dict.get(RESPONSE_MSG,None)
+            diag['message_detail'] = msg_dict.get(RESPONSE_DETAIL,None)
+            diag['message_hint'] = msg_dict.get(RESPONSE_HINT,None)
+            diag['source_file'] = msg_dict.get(RESPONSE_FILE,None)
+            diag['source_function'] = msg_dict.get(RESPONSE_ROUTINE,None)
+            diag['source_line'] = msg_dict.get(RESPONSE_LINE,None)
+            diag['source_line'] = msg_dict.get(RESPONSE_LINE,None)
+            diag['statement_position'] = msg_dict.get(RESPONSE_POSITION,None)
+            diag['internal_query'] = msg_dict.get(RESPONSE__QUERY,None)
+
+            diag['column_name'] = msg_dict.get(b('c'),None)
+            diag['constraint_name'] = msg_dict.get(b('n'),None)
+            diag['context'] = msg_dict.get(RESPONSE_WHERE,None)
+            diag['datatype_name'] = msg_dict.get(b('d'),None)
+            diag['schema_name'] = msg_dict.get(b('s'),None)
+            diag['table_name'] = msg_dict.get(b('t'),None)
+
+
+            self.error.diag = Diagnostics(**diag)
+
 
     @asyncio.coroutine
     def handle_EMPTY_QUERY_RESPONSE(self, data, ps):
@@ -2184,18 +2498,145 @@ class Connection(object):
     def handle_ROW_DESCRIPTION(self, data, cursor):
         count = h_unpack(data)[0]
         idx = 2
-        for i in range(count):
-            name = data[idx:data.find(NULL_BYTE, idx)]
-            idx += len(name) + 1
-            field = dict(
-                zip((
-                    "table_oid", "column_attrnum", "type_oid", "type_size",
-                    "type_modifier", "format"), ihihih_unpack(data, idx)))
-            field['name'] = name
-            idx += 18
-            cursor.ps['row_desc'].append(field)
-            field['pg8000_fc'], field['func'] = \
-                self.pg_types[field['type_oid']]
+
+        if 'binded' not in cursor.ps or not cursor.ps['binded']:
+            cursor.ps['row_desc'] = []
+            for i in range(count):
+                name = data[idx:data.find(NULL_BYTE, idx)]
+                idx += len(name) + 1
+                field = dict(
+                    zip((
+                        "table_oid", "column_attrnum", "type_oid", "type_size",
+                        "type_modifier", "format"), ihihih_unpack(data, idx)))
+                field['name'] = name
+                idx += 18
+                cursor.ps['row_desc'].append(field)
+
+
+                pg8000_fc, func = \
+                    self.pg_types[field['type_oid']]
+
+                #Field is in non-binary format
+                if field['format'] == 0:
+                    pg8000_fc, func = self.fc0_pg_types[field['type_oid']]
+
+                field['pg8000_fc'], field['func'] = pg8000_fc, func
+
+
+            cursor.ps['input_funcs'] = tuple(f['func'] for f in cursor.ps['row_desc'])
+
+        print_log ('row_desc:', cursor.ps['row_desc'], flush=True)
+        cursor._cached_rows.clear()
+        cursor._row_count = -1
+
+
+    @public_coroutine_decorator
+    @asyncio.coroutine
+    def execute_simple_query(self, cursor, operation, vals):
+        yield from self._check_sane()
+        if vals is None:
+            vals = {}
+        from . import paramstyle
+
+
+        statement = mogrify(operation,vals)
+        print_log ('statement:', statement, flush=True)
+        #statement, make_args = convert_paramstyle(paramstyle, operation)
+
+        #args = make_args(vals)
+        #params = self.make_params(args)
+
+        #key = tuple(oid for oid, x, y in params), operation
+
+
+
+        ps = {
+            'row_desc': [],
+            #'param_funcs': tuple(x[2] for x in params),
+        }
+        cursor.ps = ps
+
+        #param_fcs = tuple(x[1] for x in params)
+
+        # Byte1('P') - Identifies the message as a Parse command.
+        # Int32 -   Message length, including self.
+        # String -  Prepared statement name. An empty string selects the
+        #           unnamed prepared statement.
+        # String -  The query string.
+        # Int16 -   Number of parameter data types specified (can be zero).
+        # For each parameter:
+        #   Int32 - The OID of the parameter data type.
+        val = bytearray()
+        val.extend(statement.encode(self._client_encoding) + NULL_BYTE)
+
+
+        cursor._cached_rows.clear()
+        cursor._row_count = -1
+
+
+        yield from self._send_message(QUERY, val)
+        #yield from self._write(SYNC_MSG)
+
+        try:
+            yield from self._flush()
+        except AttributeError:
+            if self._writer is None:
+                raise InterfaceError("connection is closed")
+            else:
+                raise exc_info()[1]
+
+        #yield from self.handle_messages(cursor)
+
+        print_log('waiting for READY_FOR_QUERY|ROW_DESCRIPTION',flush=True)
+        yield from self.handle_messages(cursor, until_codes=[READY_FOR_QUERY, ROW_DESCRIPTION])
+
+        # We've got row_desc that allows us to identify what we're
+        # going to get back from this statement.
+        #output_fc = tuple(
+        #    self.pg_types[f['type_oid']][0] for f in ps['row_desc'])
+
+        #ps['input_funcs'] = tuple(f['func'] for f in ps['row_desc'])
+        # Byte1('B') - Identifies the Bind command.
+        # Int32 - Message length, including self.
+        # String - Name of the destination portal.
+        # String - Name of the source prepared statement.
+        # Int16 - Number of parameter format codes.
+        # For each parameter format code:
+        #   Int16 - The parameter format code.
+        # Int16 - Number of parameter values.
+        # For each parameter value:
+        #   Int32 - The length of the parameter value, in bytes, not
+        #           including this length.  -1 indicates a NULL parameter
+        #           value, in which no value bytes follow.
+        #   Byte[n] - Value of the parameter.
+        # Int16 - The number of result-column format codes.
+        # For each result-column format code:
+        #   Int16 - The format code.
+        #ps['bind_1'] = statement_name_bin + h_pack(len(params)) + \
+        #    pack("!" + "h" * len(param_fcs), *param_fcs) + \
+        #    h_pack(len(params))
+
+        #ps['bind_2'] = h_pack(len(output_fc)) + \
+        #    pack("!" + "h" * len(output_fc), *output_fc)
+
+
+        if len(ps['row_desc']) > 0:
+            print_log('waiting for READY_FOR_QUERY',flush=True)
+            yield from self.handle_messages(cursor)
+
+        print_log('execute is done',flush=True)
+
+
+        if cursor.portal_suspended:
+            if self.autocommit:
+                raise InterfaceError(
+                    "With autocommit on, it's not possible to retrieve more "
+                    "rows than the pg8000 cache size, as the portal is closed "
+                    "when the transaction is closed.")
+
+        else:
+            #yield from self.close_portal(cursor)
+            pass
 
     @public_coroutine_decorator
     @asyncio.coroutine
@@ -2214,6 +2655,7 @@ class Connection(object):
 
         args = make_args(vals)
         params = self.make_params(args)
+        print_log ('params:', params,flush=True)
 
         key = tuple(oid for oid, x, y in params), operation
 
@@ -2272,7 +2714,11 @@ class Connection(object):
             output_fc = tuple(
                 self.pg_types[f['type_oid']][0] for f in ps['row_desc'])
 
-            ps['input_funcs'] = tuple(f['func'] for f in ps['row_desc'])
+
+            #reset the input funcs to be binary format, because we are going to bind it to binary format
+            # (the row description lies on the way back unfortunately)
+            ps['input_funcs'] = tuple(self.pg_types[f['type_oid']][1] for f in ps['row_desc'])
+            ps['binded'] = True
             # Byte1('B') - Identifies the Bind command.
             # Int32 - Message length, including self.
             # String - Name of the destination portal.
@@ -2392,6 +2838,7 @@ class Connection(object):
             for k in self._caches:
                 self._caches[k]['ps'].clear()
 
+    '''
     @asyncio.coroutine
     def handle_DATA_ROW(self, data, cursor):
         data_idx = 2
@@ -2405,14 +2852,37 @@ class Connection(object):
                 row.append(func(data, data_idx, vlen))
                 data_idx += vlen
         cursor._cached_rows.append(row)
+    '''
+    @asyncio.coroutine
+    def handle_DATA_ROW(self, data, cursor):
+        data_idx = 0
+        numcols = h_unpack(data, data_idx)[0]
+        data_idx += 2
+        print_log ('numcols:',numcols,flush=True)
+        row = []
+        assert numcols == len(cursor.ps['input_funcs']), (numcols, len(cursor.ps['input_funcs']))
+        for i,func in enumerate(cursor.ps['input_funcs']):
+            vlen = i_unpack(data, data_idx)[0]
+            data_idx += 4
+            print_log ('vlen:',vlen,flush=True)
+            if vlen == -1:
+                row.append(None)
+            else:
+                assert len(data) >= data_idx + vlen
+                type_size = cursor.ps['row_desc'][i]['type_size']
+                #assert vlen == type_size, (vlen, type_size)
+                row.append(func(data, data_idx, vlen))
+                data_idx += vlen
+        cursor._cached_rows.append(tuple(row))
 
     @asyncio.coroutine
-    def handle_messages(self, cursor):
+    def handle_messages(self, cursor, until_codes=[READY_FOR_QUERY]):
         code = self.error = None
 
         try:
-            while code != READY_FOR_QUERY:
+            while code not in until_codes:
                 code, data_len = ci_unpack( (yield from self._read(5)) )
+                print_log ('code:',message_2_name[code],'code:',code, flush=True)
                 buf = yield from self._read(data_len - 4)
                 yield from self.message_types[code](buf, cursor)
         except:

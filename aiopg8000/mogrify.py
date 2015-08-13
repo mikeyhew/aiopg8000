@@ -46,6 +46,7 @@ import re
 import binascii
 import json
 import logging
+import math
 
 timetypes = (datetime.datetime,datetime.time,datetime.date)
 
@@ -215,13 +216,14 @@ class RawFormatException(Exception):
 
 
 class FormatException(Exception):
-    def __init__(self, message,format, index, lineno, colno, *args, **kwargs):
+    def __init__(self, *args, message,format, index, lineno, colno, params, **kwargs):
         self.format = format
 
 
         self.index = index
         self.lineno = lineno
         self.colno = colno
+        self.params = params
 
         indent_size = min(len(str(lineno)) + 1 + 1, 4)
         section = self.section = []
@@ -233,12 +235,14 @@ class FormatException(Exception):
                 indent += spaces
                 section += [indent + line]
 
-        message1 = '{message}\n\nindex: {index}\nline: {lineno}\ncolumn: {colno}\n\n----\n{section}\n----\n'.format(
+        message1 = '{message}\n\nindex: {index}\nline: {lineno}\ncolumn: {colno}\n\n----\n{section}\n----\n\n----\nParameters: {params}\n----'
+        message1 = message1.format(
                                       message=message
                                     , index=self.index
                                     , lineno=self.lineno
                                     , colno=self.colno
-                                    , section='\n'.join(self.section))
+                                    , section='\n'.join(self.section)
+                                    , params=str(params))
 
 
         super(FormatException,self).__init__(message1,message,format,lineno,colno, {'args': args, 'kwargs': kwargs})
@@ -309,34 +313,51 @@ def bytes_to_hex_str(buf):
 
 def quoteLiteral(value, explicit_types=False, jsonb=True):
     value0 = value
+    comma = ', '
+    
     if value is None:
         return 'NULL'
 
     elif isinstance(value,bool):
-        return ("'t'" if value else "'f'") + ('::bool' if explicit_types else '')
+        return ("true" if value else "false")
 
-    elif isinstance(value,datetime.date):
-        return "'" + formatDate(value.isoformat()) + "'" + ('::date' if explicit_types else '')
     elif isinstance(value,datetime.datetime):
-        return "'" + formatDate(value.isoformat()) + "'" + ('::datetime' if explicit_types else '')
+        return "'" + value.isoformat() + "'" + '::timestamp'
+    elif isinstance(value,datetime.date):
+        return "'" + formatDate(value.isoformat()) + "'" + '::date'
     elif isinstance(value,datetime.time):
-        return "'" + formatDate(value.isoformat()) + "'" + ('::time' if explicit_types else '')
+        return "'" + formatDate(value.isoformat()) + "'" + '::time'
 
     elif isinstance(value, (bytes, bytearray)):
         return "E'\\\\x" + bytes_to_hex_str(value)
 
     elif isinstance(value, (list,)):
-        return 'ARRAY[' + ','.join([quoteLiteral(elem,explicit_types) for elem in value]) +']'
+        return 'ARRAY[' + comma.join([quoteLiteral(elem,explicit_types) for elem in value]) +']'
 
     elif isinstance(value, (dict,)):
-        return json.dumps(value) + (('::json' if not jsonb else '::jsonb') if explicit_types else '')
+        return (
+
+              quoteLiteral(json.dumps(value), explicit_types=False, jsonb=False)
+            #+ "'"
+            + (('::json' if not jsonb else '::jsonb') if explicit_types else ''))
 
     elif isinstance(value, (str,)):
         pass
 
-    elif isinstance(value, (int,float)):
-        value = str(value)
-        pass
+    elif isinstance(value, (int)):
+        #value = str(value)
+        return str(value)
+    elif isinstance(value, (float)):
+        #value = str(value)
+        if math.isinf(value):
+            if value > 0:
+                return "'Infinity'::float"
+            else:
+                return "'-Infinity'::float"
+        elif math.isnan(value):
+            return "'NaN'::float"
+
+        return str(value)
     else:
         raise RawFormatException('value is of unknown type', type(value), type(value).__name__, value)
 
@@ -344,11 +365,14 @@ def quoteLiteral(value, explicit_types=False, jsonb=True):
     quoted = ['\'']
 
     for c in value:
-        if c == '\'':
+        if c in [
+            '\''
+            #'%'
+            ]:
             quoted += [c,c]
-        elif c == '\\':
-            quoted += [c,c]
-            hasBackslash = True
+        #elif c == '\\':
+        #    quoted += [c,c]
+        #    hasBackslash = True
         else:
             quoted += [c]
 
@@ -356,8 +380,8 @@ def quoteLiteral(value, explicit_types=False, jsonb=True):
     quoted += ['\'']
     quoted = ''.join(quoted)
 
-    if hasBackslash:
-        return 'E' + quoted
+    #if hasBackslash:
+    #    return 'E' + quoted
 
     return quoted
 
@@ -430,13 +454,29 @@ def formatWithArray(fmt, parameters):
 
 
 def mogrify(format, params={}, explicit_types=False):
-    if not isinstance(params, dict):
-        raise FormatException('Expected a params dictionary in call to mogrify, got %s instead' % (type(params).__name__)
-                                , format=format
-                                , index=0
-                                , lineno=0
-                                , colno=0
-                                , params=params )
+
+
+    def check_params_types(types):
+        if not isinstance(params, types):
+            raise FormatException( message='Expected a params %s in call to mogrify, got %s instead' % (types, type(params0).__name__)
+                                 , format=format
+                                 , index=0
+                                 , lineno=0
+                                 , colno=0
+                                 , params=params )
+
+    check_params_types(types=(dict,list,tuple))
+
+    params_type = None
+
+    if isinstance(params, dict):
+        params_type = dict
+    elif isinstance(params, list):
+        params_type = list
+    elif isinstance(params, tuple):
+        param_type = tuple
+
+
     result = []
     params_array = []
     cover_index = 0
@@ -448,51 +488,88 @@ def mogrify(format, params={}, explicit_types=False):
 
 
 
-    regex = r'(%%)|(%\([A-Za-z_][A-Za-z0-9_]*\)s)|(%)|(\n)|(\r\n)|(\r)'
+    regex = r'(%%)|(%\([A-Za-z_][A-Za-z0-9_]*\)s)|(%s)|(%)|(\n)|(\r\n)|(\r)'
     regex = re.compile(regex)
 
+    try:
+        parami = 0
+        for i,match in enumerate(regex.finditer(format)):
+            if cover_index < match.start():
+                result += [format[cover_index:match.start()]]
+            cover_index = match.end()
+            full_match = match.group(0)
 
-    for i,match in enumerate(regex.finditer(format, re.MULTILINE)):
-        if cover_index < match.start():
-            result += [format[cover_index:match.start()]]
-        cover_index = match.end()
-        full_match = match.group(0)
+            if full_match == '%%':
+                result += ['%']
 
-        if full_match == '%%':
-            results += ['%']
+            elif full_match == '%':
+                raise FormatException( message='Stray \'%\' character'
+                                     , format=format
+                                     , index=match.start()
+                                     , lineno=line_number
+                                     , colno=match.start() - line_index
+                                     , params=params)
 
-        elif full_match == '%':
-            raise FormatException('Stray \'%\' character'
-                                    , format=format
-                                    , index=match.start()
-                                    , lineno=line_number
-                                    , colno=match.start() - line_index)
+            elif full_match in ['\n','\r\n','\n']:
+                line_number += 1
+                lineindex = match.end()
+                result += [full_match]
 
-        elif full_match in ['\n','\r\n','\n']:
-            line_number += 1
-            lineindex = match.end()
-            result += [full_match]
+            elif full_match == '%s':
+                if params_type not in (tuple,list):
+                    check_params_types(types=(tuple,list))
 
-        elif len(full_match) > 0 and full_match[0] == '%':
-            param = full_match[2:-2]
-            if param not in params:
-                raise FormatException('Expected parameter: %s' % (repr(param),)
-                                        , format=format
-                                        , index=match.start()
-                                        , lineno=line_number
-                                        , colno=match.start() - line_index)
+                if not parami < len(params):
+                    raise FormatException( message='Params list is too short, not enough values to format'
+                                         , format=format
+                                         , index=match.start()
+                                         , lineno=line_number
+                                         , colno=match.start() - line_index
+                                         , params=params)
 
-            result += [quoteLiteral(params[param])]
+                result += [quoteLiteral(params[parami])]
+                parami += 1
+            elif len(full_match) > 0 and full_match[0] == '%':
+                if params_type != dict:
+                    check_params_types(types=(dict,))
+                param = full_match[2:-2]
+                if param not in params:
+                    raise FormatException( message='Expected parameter: %s' % (repr(param),)
+                                         , format=format
+                                         , index=match.start()
+                                         , lineno=line_number
+                                         , colno=match.start() - line_index
+                                         , params=params)
 
-        else:
-            raise FormatException('Internal error: unknown match'
-                                    , format=format
-                                    , index=match.start()
-                                    , lineno=line_number
-                                    , colno=match.start() - line_index
-                                    , match=match, full_match=full_match)
-    if cover_index < len(format):
-        result += [format[cover_index:]]
+                result += [quoteLiteral(params[param])]
+
+            else:
+                raise FormatException( message='Internal error: unknown match'
+                                     , format=format
+                                     , index=match.start()
+                                     , lineno=line_number
+                                     , colno=match.start() - line_index
+                                     , params=params
+                                     , match=match, full_match=full_match)
+        if cover_index < len(format):
+            result += [format[cover_index:]]
+
+        if params_type != dict and parami < len(params):
+            raise FormatException( message='Params list is too long, there are more parameters in the list than in the format string'
+                                 , format=format
+                                 , index=len(format)
+                                 , lineno=line_number
+                                 , colno=0
+                                 , params=params)
+    except RawFormatException as e:
+        raise FormatException( message='Params list is too long, there are more parametes in the list than in the format string'
+                                 , format=format
+                                 , index=len(format)
+                                 , lineno=line_number
+                                 , colno=0
+                                 , params=params) from e
+
+
     return ''.join(result)
 
 
@@ -502,6 +579,21 @@ def mogrify(format, params={}, explicit_types=False):
 
 
 if __name__ == '__main__':
+
+
+
+    sql = '''SELECT %(a)s, %(b)s; SELECT %(c)s'''
+
+
+    try:
+        result = mogrify(sql, {'a': 1, 'b': 2, 'c': 3})
+
+        print (result)
+    except:
+        logging.exception('Error')
+
+
+
     sql = '''
 WITH wasted AS(
     SELECT NULL
