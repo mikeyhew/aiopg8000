@@ -76,7 +76,7 @@ def connect( stream_generator, user=None, database=None, password=None, loop=Non
         is provided but not requested by the server, no error will occur.
 
     :keyword loop:
-        Specify an asyncio loop; will defeault to ``asyncio.get_current_loop()``
+        Specify an asyncio loop; will defeault to ``asyncio.get_event_loop()``
         if not specified.
 
 
